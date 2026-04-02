@@ -18,6 +18,8 @@ type ClientOptions struct {
 	DownloadHost string
 	DownloadPath string
 
+	DownloadProto string
+
 	SharedSecret []byte
 	UUID         string
 }
@@ -61,15 +63,30 @@ func NewClient(options ClientOptions) (*ClientConn, error) {
 		return nil, err
 	}
 
-	download, err := httpflv.Dial(options.DownloadConn, httpflv.ClientOptions{
-		Path: options.DownloadPath,
-		Host: options.DownloadHost,
-		SID:  sid,
-		Dec:  dec,
-	})
-	if err != nil {
-		_ = upload.Close()
-		return nil, err
+	var download net.Conn
+	if options.DownloadProto == "rtmp" {
+		rc, derr := rtmp.DialPlay(options.DownloadConn, rtmp.PlayClientOptions{
+			Dec:        dec,
+			SessionID:  sid,
+			StreamName: "live_" + sid,
+		})
+		if derr != nil {
+			_ = upload.Close()
+			return nil, derr
+		}
+		download = rc
+	} else {
+		var derr error
+		download, derr = httpflv.Dial(options.DownloadConn, httpflv.ClientOptions{
+			Path: options.DownloadPath,
+			Host: options.DownloadHost,
+			SID:  sid,
+			Dec:  dec,
+		})
+		if derr != nil {
+			_ = upload.Close()
+			return nil, derr
+		}
 	}
 	return NewClientConn(upload, download), nil
 }
