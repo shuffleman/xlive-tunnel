@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xlive-project/xlive/flv"
+	"github.com/shuffleman/xlive-tunnel/flv"
 )
 
 type ClientOptions struct {

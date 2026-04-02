@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	xcrypto "github.com/xlive-project/xlive/crypto"
-	"github.com/xlive-project/xlive/httpflv"
-	"github.com/xlive-project/xlive/rtmp"
+	xcrypto "github.com/shuffleman/xlive-tunnel/crypto"
+	"github.com/shuffleman/xlive-tunnel/httpflv"
+	"github.com/shuffleman/xlive-tunnel/rtmp"
 )
 
 func TestNewClientEndToEnd(t *testing.T) {

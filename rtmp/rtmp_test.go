@@ -6,7 +6,7 @@ import (
 
 	"net"
 
-	xcrypto "github.com/xlive-project/xlive/crypto"
+	xcrypto "github.com/shuffleman/xlive-tunnel/crypto"
 )
 
 func TestRTMPUploadAckRetry(t *testing.T) {

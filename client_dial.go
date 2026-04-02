@@ -6,9 +6,9 @@ import (
 	"net"
 
 	"github.com/gofrs/uuid/v5"
-	"github.com/xlive-project/xlive/crypto"
-	"github.com/xlive-project/xlive/httpflv"
-	"github.com/xlive-project/xlive/rtmp"
+	"github.com/shuffleman/xlive-tunnel/crypto"
+	"github.com/shuffleman/xlive-tunnel/httpflv"
+	"github.com/shuffleman/xlive-tunnel/rtmp"
 )
 
 type ClientOptions struct {

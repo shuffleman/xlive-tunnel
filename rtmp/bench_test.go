@@ -6,7 +6,7 @@ import (
 	"net"
 	"testing"
 
-	xcrypto "github.com/xlive-project/xlive/crypto"
+	xcrypto "github.com/shuffleman/xlive-tunnel/crypto"
 )
 
 func BenchmarkRTMPThroughput(b *testing.B) {

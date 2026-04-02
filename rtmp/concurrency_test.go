@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	xcrypto "github.com/xlive-project/xlive/crypto"
+	xcrypto "github.com/shuffleman/xlive-tunnel/crypto"
 )
 
 func TestConcurrentWritesNoAckTimeout(t *testing.T) {
@@ -43,8 +43,8 @@ func TestConcurrentWritesNoAckTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := NewClient(cconn, ClientOptions{
-		Enc:        enc,
-		SessionID:  "0123456789abcdef0123456789abcdef",
+		Enc:       enc,
+		SessionID: "0123456789abcdef0123456789abcdef",
 	})
 	if err := client.Start(); err != nil {
 		t.Fatal(err)
@@ -70,4 +70,3 @@ func TestConcurrentWritesNoAckTimeout(t *testing.T) {
 	_ = client.Close()
 	_ = server.Close()
 }
-

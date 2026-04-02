@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/xlive-project/xlive/flv"
+	"github.com/shuffleman/xlive-tunnel/flv"
 )
 
 type ServerStream struct {

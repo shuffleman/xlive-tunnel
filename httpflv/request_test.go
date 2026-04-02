@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	xcrypto "github.com/xlive-project/xlive/crypto"
-	"github.com/xlive-project/xlive/flv"
+	xcrypto "github.com/shuffleman/xlive-tunnel/crypto"
+	"github.com/shuffleman/xlive-tunnel/flv"
 )
 
 func TestDialRequestPathFormatting(t *testing.T) {

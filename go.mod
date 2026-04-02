@@ -1,4 +1,4 @@
-module github.com/xlive-project/xlive
+module github.com/shuffleman/xlive-tunnel
 
 go 1.23.1
 
