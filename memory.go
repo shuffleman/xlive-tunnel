@@ -4,14 +4,17 @@ import (
 	"runtime"
 	"runtime/debug"
 	"sync"
+	"time"
 
 	"github.com/shuffleman/xlive-tunnel/rtmp"
 )
 
-var DefaultIOSMemoryLimitBytes int64 = 40 << 20
-var DefaultIOSGCPercent = 50
-var DefaultIOSMaxMessageSize uint32 = 8 << 20
-var DefaultIOSMaxChunkStreams = 256
+var DefaultIOSMemoryLimitBytes int64 = 30 << 20
+var DefaultIOSGCPercent = 20
+var DefaultIOSMaxMessageSize uint32 = 4 << 20
+var DefaultIOSMaxChunkStreams = 128
+var DefaultIOSMaxFramePayload = 32 * 1024
+var DefaultIOSFreeOSMemoryInterval = time.Second
 
 var iosDefaultsOnce sync.Once
 
@@ -31,6 +34,18 @@ func applyIOSDefaults() {
 		}
 		if DefaultIOSMaxChunkStreams > 0 && rtmp.DefaultMaxChunkStreams > DefaultIOSMaxChunkStreams {
 			rtmp.DefaultMaxChunkStreams = DefaultIOSMaxChunkStreams
+		}
+		if DefaultIOSMaxFramePayload > 0 && rtmp.DefaultMaxFramePayload > DefaultIOSMaxFramePayload {
+			rtmp.DefaultMaxFramePayload = DefaultIOSMaxFramePayload
+		}
+		if DefaultIOSFreeOSMemoryInterval > 0 {
+			go func() {
+				t := time.NewTicker(DefaultIOSFreeOSMemoryInterval)
+				defer t.Stop()
+				for range t.C {
+					debug.FreeOSMemory()
+				}
+			}()
 		}
 	})
 }

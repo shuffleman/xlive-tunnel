@@ -223,6 +223,31 @@ func (c *Client) Write(p []byte) (n int, err error) {
 		return 0, errors.New("rtmp: nil encryptor")
 	}
 
+	maxPayload := DefaultMaxFramePayload
+	if maxPayload < 1024 {
+		maxPayload = 1024
+	}
+	if maxPayload > 4*1024*1024 {
+		maxPayload = 4 * 1024 * 1024
+	}
+
+	off := 0
+	for off < len(p) {
+		end := off + maxPayload
+		if end > len(p) {
+			end = len(p)
+		}
+		wn, werr := c.writeOnce(p[off:end])
+		n += wn
+		if werr != nil {
+			return n, werr
+		}
+		off = end
+	}
+	return n, nil
+}
+
+func (c *Client) writeOnce(p []byte) (n int, err error) {
 	var hdr []byte
 	var msgType uint8
 	var csid uint32

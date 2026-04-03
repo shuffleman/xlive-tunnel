@@ -38,6 +38,7 @@ type Conn struct {
 }
 
 var DefaultIOBufferSize = 4 * 1024
+var DefaultMaxFramePayload = 64 * 1024
 
 func newConn(c net.Conn) *Conn {
 	size := DefaultIOBufferSize

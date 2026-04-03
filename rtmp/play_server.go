@@ -273,6 +273,30 @@ func (s *PlayServer) Write(p []byte) (n int, err error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
+	maxPayload := DefaultMaxFramePayload
+	if maxPayload < 1024 {
+		maxPayload = 1024
+	}
+	if maxPayload > 4*1024*1024 {
+		maxPayload = 4 * 1024 * 1024
+	}
+	off := 0
+	for off < len(p) {
+		end := off + maxPayload
+		if end > len(p) {
+			end = len(p)
+		}
+		wn, werr := s.writeOnce(p[off:end])
+		n += wn
+		if werr != nil {
+			return n, werr
+		}
+		off = end
+	}
+	return n, nil
+}
+
+func (s *PlayServer) writeOnce(p []byte) (n int, err error) {
 	var hdr []byte
 	var msgType uint8
 	var csid uint32
