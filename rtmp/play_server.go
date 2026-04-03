@@ -28,6 +28,7 @@ type PlayServer struct {
 	firstWrite      bool
 	writeCounter    uint32
 	videoFrameCount uint32
+	tmp             []byte
 	closed          bool
 }
 
@@ -196,7 +197,10 @@ func (s *PlayServer) writeFrame(msgType uint8, csid uint32, hdr []byte, payload 
 	defer s.c.mu.Unlock()
 	cw := s.c.cw
 	chunkSize := cw.chunkSize
-	tmp := make([]byte, chunkSize)
+	if cap(s.tmp) < int(chunkSize) {
+		s.tmp = make([]byte, chunkSize)
+	}
+	tmp := s.tmp[:chunkSize]
 
 	totalLen := uint32(len(hdr) + len(payload))
 	h := messageHeader{

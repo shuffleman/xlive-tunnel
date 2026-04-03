@@ -2,7 +2,6 @@ package httpflv
 
 import (
 	"bufio"
-	"bytes"
 	"crypto/cipher"
 	"errors"
 	"io"
@@ -27,9 +26,9 @@ type ClientConn struct {
 	r   *bufio.Reader
 	dec cipher.Stream
 
-	once sync.Once
-
-	tagBuf bytes.Buffer
+	once   sync.Once
+	buf    []byte
+	bufOff int
 }
 
 var _ net.Conn = (*ClientConn)(nil)
@@ -99,7 +98,23 @@ func readAndDiscardFLVHeader(r *bufio.Reader) error {
 }
 
 func (c *ClientConn) Read(p []byte) (n int, err error) {
-	for c.tagBuf.Len() == 0 {
+	const maxKeep = 256 * 1024
+
+	for {
+		if c.bufOff < len(c.buf) {
+			n = copy(p, c.buf[c.bufOff:])
+			c.bufOff += n
+			if c.bufOff >= len(c.buf) {
+				if cap(c.buf) > maxKeep {
+					c.buf = nil
+				} else {
+					c.buf = c.buf[:0]
+				}
+				c.bufOff = 0
+			}
+			return n, nil
+		}
+
 		tagType, _, data, err := flv.ReadTag(c.r)
 		if err != nil {
 			return 0, err
@@ -107,11 +122,20 @@ func (c *ClientConn) Read(p []byte) (n int, err error) {
 		if tagType != flv.TagTypeVideo && tagType != flv.TagTypeAudio {
 			continue
 		}
-		pt := make([]byte, len(data))
-		c.dec.XORKeyStream(pt, data)
-		c.tagBuf.Write(pt)
+
+		if len(p) >= len(data) {
+			c.dec.XORKeyStream(p[:len(data)], data)
+			return len(data), nil
+		}
+
+		if len(data) <= maxKeep && cap(c.buf) >= len(data) {
+			c.buf = c.buf[:len(data)]
+		} else {
+			c.buf = make([]byte, len(data))
+		}
+		c.dec.XORKeyStream(c.buf, data)
+		c.bufOff = 0
 	}
-	return c.tagBuf.Read(p)
 }
 
 func (c *ClientConn) Write(p []byte) (n int, err error) {

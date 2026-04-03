@@ -2,11 +2,14 @@ package rtmp
 
 import (
 	"encoding/binary"
+	"errors"
 	"io"
 )
 
 const (
 	defaultChunkSize = 128
+	defaultMaxMessageSize = 32 << 20
+	defaultMaxChunkStreams = 1024
 )
 
 type messageHeader struct {
@@ -155,6 +158,8 @@ type chunkReader struct {
 	lastExt       map[uint32]bool
 	lastDeltaMode map[uint32]bool
 	inflight      map[uint32]*inflightMessage
+	maxMessageSize  uint32
+	maxChunkStreams int
 }
 
 type inflightMessage struct {
@@ -172,6 +177,8 @@ func newChunkReader(r io.Reader) *chunkReader {
 		lastExt:       make(map[uint32]bool),
 		lastDeltaMode: make(map[uint32]bool),
 		inflight:      make(map[uint32]*inflightMessage),
+		maxMessageSize:  defaultMaxMessageSize,
+		maxChunkStreams: defaultMaxChunkStreams,
 	}
 }
 
@@ -188,7 +195,11 @@ func (c *chunkReader) ReadMessage() (*message, error) {
 		if err != nil {
 			return nil, err
 		}
-		prevHeader := c.prev[csid]
+		prevHeader, hasPrev := c.prev[csid]
+		im := c.inflight[csid]
+		if !hasPrev && im == nil && c.maxChunkStreams > 0 && len(c.prev) >= c.maxChunkStreams {
+			return nil, errors.New("rtmp: too many chunk streams")
+		}
 		h, tsOrDelta, ext, isDelta, err := readMessageHeader(c.r, fmt, prevHeader)
 		if err != nil {
 			return nil, err
@@ -221,13 +232,15 @@ func (c *chunkReader) ReadMessage() (*message, error) {
 			}
 		}
 
-		im := c.inflight[csid]
 		newMessage := fmt == 0 || fmt == 1 || fmt == 2 || (fmt == 3 && im == nil)
 		if fmt == 3 && im == nil && prevHeader.MessageLength == 0 && prevHeader.MessageTypeID == 0 && prevHeader.MessageStreamID == 0 && prevHeader.Timestamp == 0 {
 			return nil, io.ErrUnexpectedEOF
 		}
 
 		if newMessage {
+			if c.maxMessageSize > 0 && h.MessageLength > c.maxMessageSize {
+				return nil, errors.New("rtmp: message too large")
+			}
 			if fmt == 0 {
 				c.lastDelta[csid] = 0
 				c.lastDeltaMode[csid] = false
@@ -252,7 +265,7 @@ func (c *chunkReader) ReadMessage() (*message, error) {
 			}
 			c.prev[csid] = h
 			c.lastExt[csid] = needExt
-			im = &inflightMessage{header: h, buf: make([]byte, h.MessageLength)}
+			im = &inflightMessage{header: h, buf: make([]byte, int(h.MessageLength))}
 			c.inflight[csid] = im
 		} else {
 			if im == nil {

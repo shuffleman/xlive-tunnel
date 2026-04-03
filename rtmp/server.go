@@ -35,6 +35,7 @@ type Server struct {
 	sessionID  string
 	xliveReady chan struct{}
 	doneCh     chan struct{}
+	drainOnce  sync.Once
 
 	// relay mode: when key detection fails, forward raw RTMP messages
 	// to an upstream server (e.g., nginx-rtmp) instead of decrypting.
@@ -80,16 +81,23 @@ func NewServer(raw net.Conn, opts ServerOptions) (*Server, error) {
 		windowAckSize: 2500000,
 		closeCh:       make(chan struct{}),
 	}
-	go s.drainLoop()
 	return s, nil
 }
 
 func (s *Server) drainLoop() {
 	defer s.plainPipeW.Close()
-	for data := range s.dataCh {
-		_, err := s.plainPipeW.Write(data)
-		if err != nil {
+	for {
+		select {
+		case <-s.closeCh:
 			return
+		case data, ok := <-s.dataCh:
+			if !ok {
+				return
+			}
+			_, err := s.plainPipeW.Write(data)
+			if err != nil {
+				return
+			}
 		}
 	}
 }
@@ -144,6 +152,7 @@ func (s *Server) Start() (sessionID string, err error) {
 	_, _, _, _ = s.readCommandWait("publish", 5*time.Second)
 	_ = s.writeOnStatusPublishStart()
 
+	s.drainOnce.Do(func() { go s.drainLoop() })
 	go s.readLoop()
 	return sid, nil
 }
@@ -359,7 +368,10 @@ func (s *Server) handleAudioMessage(msg *message) {
 	}
 
 	s.dec.XORKeyStream(data, data)
-	s.dataCh <- data
+	select {
+	case s.dataCh <- data:
+	case <-s.closeCh:
+	}
 }
 
 // handleVideoMessage processes Video messages (H.264 AVC format).
@@ -392,7 +404,10 @@ func (s *Server) handleVideoMessage(msg *message) {
 	}
 
 	s.dec.XORKeyStream(data, data)
-	s.dataCh <- data
+	select {
+	case s.dataCh <- data:
+	case <-s.closeCh:
+	}
 }
 
 // XLIVEReady returns a channel that is closed when the first encrypted data frame
@@ -428,6 +443,7 @@ func (s *Server) Write(p []byte) (n int, err error) {
 func (s *Server) Close() error {
 	s.closeOnce.Do(func() {
 		close(s.closeCh)
+		_ = s.plainPipeW.Close()
 		_ = s.raw.Close()
 	})
 	return nil
