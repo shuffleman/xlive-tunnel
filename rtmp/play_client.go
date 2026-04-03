@@ -25,7 +25,8 @@ type PlayClient struct {
 	dec cipher.Stream
 
 	readMu    sync.Mutex
-	buf       []byte
+	src       []byte
+	srcOff    int
 	closed    bool
 	streamID  uint32
 	streamKey string
@@ -140,7 +141,23 @@ func (c *PlayClient) Read(p []byte) (n int, err error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
-	for len(c.buf) == 0 {
+
+	for {
+		if c.srcOff < len(c.src) {
+			n = len(p)
+			remain := len(c.src) - c.srcOff
+			if remain < n {
+				n = remain
+			}
+			c.dec.XORKeyStream(p[:n], c.src[c.srcOff:c.srcOff+n])
+			c.srcOff += n
+			if c.srcOff >= len(c.src) {
+				c.src = nil
+				c.srcOff = 0
+			}
+			return n, nil
+		}
+
 		m, err := c.c.ReadMessage()
 		if err != nil {
 			return 0, err
@@ -158,9 +175,8 @@ func (c *PlayClient) Read(p []byte) (n int, err error) {
 			if m.Payload[1] != aacPacketRaw {
 				continue
 			}
-			data := append([]byte(nil), m.Payload[2:]...)
-			c.dec.XORKeyStream(data, data)
-			c.buf = data
+			c.src = m.Payload[2:]
+			c.srcOff = 0
 		case messageTypeVideo:
 			if len(m.Payload) < 9 {
 				continue
@@ -172,16 +188,11 @@ func (c *PlayClient) Read(p []byte) (n int, err error) {
 			if 9+naluLen > len(m.Payload) {
 				continue
 			}
-			data := append([]byte(nil), m.Payload[9:9+naluLen]...)
-			c.dec.XORKeyStream(data, data)
-			c.buf = data
+			c.src = m.Payload[9 : 9+naluLen]
+			c.srcOff = 0
 		default:
 		}
 	}
-
-	n = copy(p, c.buf)
-	c.buf = c.buf[n:]
-	return n, nil
 }
 
 func (c *PlayClient) Write([]byte) (int, error)          { return 0, io.ErrClosedPipe }

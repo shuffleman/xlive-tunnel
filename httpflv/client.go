@@ -26,9 +26,11 @@ type ClientConn struct {
 	r   *bufio.Reader
 	dec cipher.Stream
 
-	once   sync.Once
-	buf    []byte
-	bufOff int
+	once sync.Once
+
+	inTag     bool
+	tagType   byte
+	tagRemain uint32
 }
 
 var _ net.Conn = (*ClientConn)(nil)
@@ -67,7 +69,7 @@ func Dial(raw net.Conn, opts ClientOptions) (*ClientConn, error) {
 	if err != nil {
 		return nil, err
 	}
-	_, _, _, _ = flv.ReadTag(r)
+	_ = discardOneTag(r)
 	return &ClientConn{raw: raw, r: r, dec: opts.Dec}, nil
 }
 
@@ -98,43 +100,47 @@ func readAndDiscardFLVHeader(r *bufio.Reader) error {
 }
 
 func (c *ClientConn) Read(p []byte) (n int, err error) {
-	const maxKeep = 256 * 1024
+	if len(p) == 0 {
+		return 0, nil
+	}
 
 	for {
-		if c.bufOff < len(c.buf) {
-			n = copy(p, c.buf[c.bufOff:])
-			c.bufOff += n
-			if c.bufOff >= len(c.buf) {
-				if cap(c.buf) > maxKeep {
-					c.buf = nil
-				} else {
-					c.buf = c.buf[:0]
+		if c.inTag {
+			if c.tagRemain == 0 {
+				if err := discardN(c.r, 4); err != nil {
+					return 0, err
 				}
-				c.bufOff = 0
+				c.inTag = false
+				continue
 			}
-			return n, nil
+			toRead := uint32(len(p))
+			if c.tagRemain < toRead {
+				toRead = c.tagRemain
+			}
+			n, err := c.r.Read(p[:toRead])
+			if n > 0 {
+				c.dec.XORKeyStream(p[:n], p[:n])
+				c.tagRemain -= uint32(n)
+				return n, nil
+			}
+			return 0, err
 		}
 
-		tagType, _, data, err := flv.ReadTag(c.r)
+		tagType, dataSize, err := readTagHeader(c.r)
 		if err != nil {
 			return 0, err
 		}
+
 		if tagType != flv.TagTypeVideo && tagType != flv.TagTypeAudio {
+			if err := discardN(c.r, int64(dataSize)+4); err != nil {
+				return 0, err
+			}
 			continue
 		}
 
-		if len(p) >= len(data) {
-			c.dec.XORKeyStream(p[:len(data)], data)
-			return len(data), nil
-		}
-
-		if len(data) <= maxKeep && cap(c.buf) >= len(data) {
-			c.buf = c.buf[:len(data)]
-		} else {
-			c.buf = make([]byte, len(data))
-		}
-		c.dec.XORKeyStream(c.buf, data)
-		c.bufOff = 0
+		c.inTag = true
+		c.tagType = tagType
+		c.tagRemain = dataSize
 	}
 }
 
@@ -158,4 +164,28 @@ func (c *ClientConn) SetReadDeadline(t time.Time) error {
 }
 func (c *ClientConn) SetWriteDeadline(t time.Time) error {
 	return c.raw.SetWriteDeadline(t)
+}
+
+func readTagHeader(r io.Reader) (tagType byte, dataSize uint32, err error) {
+	var h [11]byte
+	_, err = io.ReadFull(r, h[:])
+	if err != nil {
+		return 0, 0, err
+	}
+	tagType = h[0]
+	dataSize = uint32(h[1])<<16 | uint32(h[2])<<8 | uint32(h[3])
+	return tagType, dataSize, nil
+}
+
+func discardOneTag(r io.Reader) error {
+	_, dataSize, err := readTagHeader(r)
+	if err != nil {
+		return err
+	}
+	return discardN(r, int64(dataSize)+4)
+}
+
+func discardN(r io.Reader, n int64) error {
+	_, err := io.CopyN(io.Discard, r, n)
+	return err
 }
