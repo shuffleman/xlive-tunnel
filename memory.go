@@ -14,6 +14,7 @@ var DefaultIOSGCPercent = 10
 var DefaultIOSMaxMessageSize uint32 = 64 * 1024
 var DefaultIOSMaxChunkStreams = 64
 var DefaultIOSMaxFramePayload = 16 * 1024
+var DefaultIOSChunkSize uint32 = 16 * 1024
 var DefaultIOSFreeOSMemoryInterval = time.Second
 
 var iosDefaultsOnce sync.Once

@@ -275,11 +275,12 @@ func (c *Client) writeOnce(p []byte) (n int, err error) {
 				frameType = avcFrameKeyframe
 			}
 			// AVC NALU header: [frameType|codecID][avcPacketType=NALU][compTime 3B][NALU length 4B]
-			hdr = make([]byte, 9)
-			hdr[0] = frameType
-			hdr[1] = avcPacketNALU
+			var hb [9]byte
+			hb[0] = frameType
+			hb[1] = avcPacketNALU
 			// hdr[2:5] = compositionTime = 0 (no B-frames)
-			binary.BigEndian.PutUint32(hdr[5:9], uint32(len(p)))
+			binary.BigEndian.PutUint32(hb[5:9], uint32(len(p)))
+			hdr = hb[:]
 			msgType = messageTypeVideo
 			csid = csidVideo
 		}
@@ -378,7 +379,13 @@ func (c *Client) Close() error {
 	default:
 		close(c.closeCh)
 	}
-	return c.raw.Close()
+	err := c.raw.Close()
+	c.writeMu.Lock()
+	c.enc = nil
+	c.tmp = nil
+	c.c = nil
+	c.writeMu.Unlock()
+	return err
 }
 
 func (c *Client) Read(p []byte) (n int, err error) {

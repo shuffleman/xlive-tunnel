@@ -317,10 +317,11 @@ func (s *PlayServer) writeOnce(p []byte) (n int, err error) {
 			if s.videoFrameCount%60 == 0 {
 				frameType = avcFrameKeyframe
 			}
-			hdr = make([]byte, 9)
-			hdr[0] = frameType
-			hdr[1] = avcPacketNALU
-			binary.BigEndian.PutUint32(hdr[5:9], uint32(len(p)))
+			var hb [9]byte
+			hb[0] = frameType
+			hb[1] = avcPacketNALU
+			binary.BigEndian.PutUint32(hb[5:9], uint32(len(p)))
+			hdr = hb[:]
 			msgType = messageTypeVideo
 			csid = csidVideo
 		}
@@ -331,8 +332,17 @@ func (s *PlayServer) writeOnce(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-func (s *PlayServer) Read(p []byte) (int, error)         { return 0, io.EOF }
-func (s *PlayServer) Close() error                       { s.closed = true; return s.raw.Close() }
+func (s *PlayServer) Read(p []byte) (int, error) { return 0, io.EOF }
+func (s *PlayServer) Close() error {
+	s.closed = true
+	err := s.raw.Close()
+	s.writeMu.Lock()
+	s.enc = nil
+	s.tmp = nil
+	s.c = nil
+	s.writeMu.Unlock()
+	return err
+}
 func (s *PlayServer) LocalAddr() net.Addr                { return s.raw.LocalAddr() }
 func (s *PlayServer) RemoteAddr() net.Addr               { return s.raw.RemoteAddr() }
 func (s *PlayServer) SetDeadline(t time.Time) error      { return s.raw.SetDeadline(t) }

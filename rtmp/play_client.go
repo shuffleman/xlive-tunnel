@@ -195,8 +195,18 @@ func (c *PlayClient) Read(p []byte) (n int, err error) {
 	}
 }
 
-func (c *PlayClient) Write([]byte) (int, error)          { return 0, io.ErrClosedPipe }
-func (c *PlayClient) Close() error                       { c.closed = true; return c.raw.Close() }
+func (c *PlayClient) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+func (c *PlayClient) Close() error {
+	c.closed = true
+	err := c.raw.Close()
+	c.readMu.Lock()
+	c.dec = nil
+	c.src = nil
+	c.srcOff = 0
+	c.c = nil
+	c.readMu.Unlock()
+	return err
+}
 func (c *PlayClient) LocalAddr() net.Addr                { return c.raw.LocalAddr() }
 func (c *PlayClient) RemoteAddr() net.Addr               { return c.raw.RemoteAddr() }
 func (c *PlayClient) SetDeadline(t time.Time) error      { return c.raw.SetDeadline(t) }

@@ -4,6 +4,7 @@ import (
 	"crypto/cipher"
 	"errors"
 	"net"
+	"runtime"
 
 	"github.com/gofrs/uuid/v5"
 	"github.com/shuffleman/xlive-tunnel/crypto"
@@ -54,8 +55,13 @@ func NewClient(options ClientOptions) (*ClientConn, error) {
 		return nil, err
 	}
 
+	chunkSize := uint32(262144)
+	if runtime.GOOS == "ios" && DefaultIOSChunkSize > 0 {
+		chunkSize = DefaultIOSChunkSize
+	}
+
 	upload := rtmp.NewClient(options.UploadConn, rtmp.ClientOptions{
-		ChunkSize: 262144,
+		ChunkSize: chunkSize,
 		Enc:       enc,
 		SessionID: sid,
 	})
@@ -67,6 +73,7 @@ func NewClient(options ClientOptions) (*ClientConn, error) {
 	var download net.Conn
 	if options.DownloadProto == "rtmp" {
 		rc, derr := rtmp.DialPlay(options.DownloadConn, rtmp.PlayClientOptions{
+			ChunkSize:  chunkSize,
 			Dec:        dec,
 			SessionID:  sid,
 			StreamName: "live_" + sid,
