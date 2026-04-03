@@ -9,9 +9,9 @@ import (
 	"github.com/shuffleman/xlive-tunnel/rtmp"
 )
 
-var DefaultIOSMemoryLimitBytes int64 = 30 << 20
-var DefaultIOSGCPercent = 20
-var DefaultIOSMaxMessageSize uint32 = 512 * 1024
+var DefaultIOSMemoryLimitBytes int64 = 15 << 20
+var DefaultIOSGCPercent = 10
+var DefaultIOSMaxMessageSize uint32 = 64 * 1024
 var DefaultIOSMaxChunkStreams = 64
 var DefaultIOSMaxFramePayload = 16 * 1024
 var DefaultIOSFreeOSMemoryInterval = time.Second
