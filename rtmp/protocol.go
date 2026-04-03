@@ -37,7 +37,7 @@ type Conn struct {
 	mu sync.Mutex
 }
 
-var DefaultIOBufferSize = 256 * 1024
+var DefaultIOBufferSize = 4 * 1024
 
 func newConn(c net.Conn) *Conn {
 	size := DefaultIOBufferSize
