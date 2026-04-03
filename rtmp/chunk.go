@@ -10,8 +10,8 @@ const (
 	defaultChunkSize = 128
 )
 
-var DefaultMaxMessageSize uint32 = 32 << 20
-var DefaultMaxChunkStreams = 1024
+var DefaultMaxMessageSize uint32 = 8 << 20
+var DefaultMaxChunkStreams = 256
 
 type messageHeader struct {
 	Timestamp       uint32

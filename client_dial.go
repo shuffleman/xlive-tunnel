@@ -25,6 +25,7 @@ type ClientOptions struct {
 }
 
 func NewClient(options ClientOptions) (*ClientConn, error) {
+	applyIOSDefaults()
 	if options.UploadConn == nil || options.DownloadConn == nil {
 		return nil, errors.New("xlive: missing connections")
 	}
