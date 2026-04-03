@@ -21,7 +21,6 @@ const (
 	messageTypeVideo            = 9
 )
 
-
 const (
 	csidControl = 2
 	csidCommand = 3
@@ -38,9 +37,15 @@ type Conn struct {
 	mu sync.Mutex
 }
 
+var DefaultIOBufferSize = 256 * 1024
+
 func newConn(c net.Conn) *Conn {
-	br := bufio.NewReaderSize(c, 256*1024)
-	bw := bufio.NewWriterSize(c, 256*1024)
+	size := DefaultIOBufferSize
+	if size < 4096 {
+		size = 4096
+	}
+	br := bufio.NewReaderSize(c, size)
+	bw := bufio.NewWriterSize(c, size)
 	return &Conn{
 		c:  c,
 		cr: newChunkReader(br),

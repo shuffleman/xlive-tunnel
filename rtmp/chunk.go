@@ -8,9 +8,10 @@ import (
 
 const (
 	defaultChunkSize = 128
-	defaultMaxMessageSize = 32 << 20
-	defaultMaxChunkStreams = 1024
 )
+
+var DefaultMaxMessageSize uint32 = 32 << 20
+var DefaultMaxChunkStreams = 1024
 
 type messageHeader struct {
 	Timestamp       uint32
@@ -151,13 +152,13 @@ func readMessageHeader(r io.Reader, fmt uint8, prev messageHeader) (h messageHea
 }
 
 type chunkReader struct {
-	r             io.Reader
-	chunkSize     uint32
-	prev          map[uint32]messageHeader
-	lastDelta     map[uint32]uint32
-	lastExt       map[uint32]bool
-	lastDeltaMode map[uint32]bool
-	inflight      map[uint32]*inflightMessage
+	r               io.Reader
+	chunkSize       uint32
+	prev            map[uint32]messageHeader
+	lastDelta       map[uint32]uint32
+	lastExt         map[uint32]bool
+	lastDeltaMode   map[uint32]bool
+	inflight        map[uint32]*inflightMessage
 	maxMessageSize  uint32
 	maxChunkStreams int
 }
@@ -170,15 +171,15 @@ type inflightMessage struct {
 
 func newChunkReader(r io.Reader) *chunkReader {
 	return &chunkReader{
-		r:             r,
-		chunkSize:     defaultChunkSize,
-		prev:          make(map[uint32]messageHeader),
-		lastDelta:     make(map[uint32]uint32),
-		lastExt:       make(map[uint32]bool),
-		lastDeltaMode: make(map[uint32]bool),
-		inflight:      make(map[uint32]*inflightMessage),
-		maxMessageSize:  defaultMaxMessageSize,
-		maxChunkStreams: defaultMaxChunkStreams,
+		r:               r,
+		chunkSize:       defaultChunkSize,
+		prev:            make(map[uint32]messageHeader),
+		lastDelta:       make(map[uint32]uint32),
+		lastExt:         make(map[uint32]bool),
+		lastDeltaMode:   make(map[uint32]bool),
+		inflight:        make(map[uint32]*inflightMessage),
+		maxMessageSize:  DefaultMaxMessageSize,
+		maxChunkStreams: DefaultMaxChunkStreams,
 	}
 }
 
