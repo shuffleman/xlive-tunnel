@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -48,14 +49,28 @@ func (r *RelayClient) Connect(streamKey string) error {
 	_ = r.c.WriteSetChunkSize(r.c.cw.chunkSize)
 
 	// connect
+	app := defaultRTMPAppBase
+	if a, _, ok := strings.Cut(streamKey, "/"); ok && a != "" {
+		app = sanitizeRTMPName(a)
+		if app == "" {
+			app = defaultRTMPAppBase
+		}
+	}
+	fp := DefaultFingerprint()
+	fp.AppBase = app
+	host := hostFromAddr(r.raw.RemoteAddr())
+	if host == "" {
+		host = fp.TcURLHost
+	}
+	tcURL := fp.TcURLScheme + host + "/" + app
 	err = r.c.writeRawMessage(csidCommand, messageHeader{
 		MessageTypeID:   messageTypeCommandAMF0,
 		MessageStreamID: 0,
-	}, buildConnectPayload(streamKey))
+	}, buildConnectPayloadWithAppAndTcURL(app, tcURL, fp))
 	if err != nil {
 		return err
 	}
-	_, err = r.waitCommand("_result", 1, 5*time.Second)
+	_, err = r.waitCommand(amfCmdResult, 1, 5*time.Second)
 	if err != nil {
 		return err
 	}
@@ -68,7 +83,7 @@ func (r *RelayClient) Connect(streamKey string) error {
 	if err != nil {
 		return err
 	}
-	_, err = r.waitCommand("_result", 2, 5*time.Second)
+	_, err = r.waitCommand(amfCmdResult, 2, 5*time.Second)
 	if err != nil {
 		return err
 	}

@@ -12,9 +12,10 @@ import (
 )
 
 type PlayServerOptions struct {
-	ChunkSize  uint32
-	Enc        cipher.Stream
-	StreamName string
+	ChunkSize   uint32
+	Enc         cipher.Stream
+	StreamName  string
+	Fingerprint *Fingerprint
 }
 
 type PlayServer struct {
@@ -23,6 +24,7 @@ type PlayServer struct {
 
 	enc        cipher.Stream
 	streamName string
+	fp         Fingerprint
 
 	writeMu         sync.Mutex
 	firstWrite      bool
@@ -45,6 +47,7 @@ func NewPlayServer(raw net.Conn, opts PlayServerOptions) *PlayServer {
 		c:          c,
 		enc:        opts.Enc,
 		streamName: opts.StreamName,
+		fp:         normalizeFingerprint(opts.Fingerprint),
 		firstWrite: true,
 	}
 	return ps
@@ -64,7 +67,7 @@ func (s *PlayServer) Start() error {
 	}
 	for msg != nil {
 		name, _, perr := parseCommandNameAndTxID(msg.Payload)
-		if perr == nil && name == "connect" {
+		if perr == nil && name == amfCmdConnect {
 			break
 		}
 		_, connectTx, msg, err = s.readCommandAny(5 * time.Second)
@@ -72,11 +75,11 @@ func (s *PlayServer) Start() error {
 			return err
 		}
 	}
-	if err := psWriteResultConnect(s.c, connectTx); err != nil {
+	if err := psWriteResultConnect(s.c, connectTx, &s.fp); err != nil {
 		return err
 	}
 
-	_, createTx, _, err := s.readCommandWait("createStream", 5*time.Second)
+	_, createTx, _, err := s.readCommandWait(amfCmdCreateStream, 5*time.Second)
 	if err != nil {
 		return err
 	}
@@ -84,11 +87,11 @@ func (s *PlayServer) Start() error {
 		return err
 	}
 
-	cmd, _, msg, err := s.readCommandWait("play", 5*time.Second)
+	cmd, _, msg, err := s.readCommandWait(amfCmdPlay, 5*time.Second)
 	if err != nil {
 		return err
 	}
-	if cmd == "play" && s.streamName == "" {
+	if cmd == amfCmdPlay && s.streamName == "" {
 		dec := newAMF0Decoder(msg.Payload)
 		_, _ = dec.readValue()
 		_, _ = dec.readValue()
@@ -106,7 +109,7 @@ func (s *PlayServer) Start() error {
 		Timestamp:       0,
 		MessageTypeID:   messageTypeCommandAMF0,
 		MessageStreamID: 1,
-	}, buildSetDataFramePayload()); err != nil {
+	}, buildSetDataFramePayload(&s.fp)); err != nil {
 		return err
 	}
 	if err := s.c.writeRawMessage(csidAudio, messageHeader{
@@ -136,13 +139,13 @@ func (s *PlayServer) SetEnc(enc cipher.Stream) {
 
 func (s *PlayServer) writeOnStatusPlayStart() error {
 	b := bytes.NewBuffer(nil)
-	amf0WriteString(b, "onStatus")
+	amf0WriteString(b, amfCmdOnStatus)
 	amf0WriteNumber(b, 0)
 	amf0WriteNull(b)
 	amf0WriteObject(b, map[string]amf0Value{
-		"level":       "status",
-		"code":        "NetStream.Play.Start",
-		"description": "Start playing",
+		"level":       amfLevelStatus,
+		"code":        amfCodeNetStreamPlayStart,
+		"description": amfDescStartPlaying,
 	})
 	return s.c.writeRawMessage(csidCommand, messageHeader{
 		MessageTypeID:   messageTypeCommandAMF0,
@@ -349,20 +352,21 @@ func (s *PlayServer) SetDeadline(t time.Time) error      { return s.raw.SetDeadl
 func (s *PlayServer) SetReadDeadline(t time.Time) error  { return s.raw.SetReadDeadline(t) }
 func (s *PlayServer) SetWriteDeadline(t time.Time) error { return s.raw.SetWriteDeadline(t) }
 
-func psWriteResultConnect(c *Conn, txID float64) error {
+func psWriteResultConnect(c *Conn, txID float64, fp *Fingerprint) error {
+	nfp := normalizeFingerprint(fp)
 	b := bytes.NewBuffer(nil)
-	amf0WriteString(b, "_result")
+	amf0WriteString(b, amfCmdResult)
 	amf0WriteNumber(b, txID)
 	amf0WriteObject(b, map[string]amf0Value{
-		"fmsVer":       "FMS/3,0,1,123",
+		"fmsVer":       nfp.ServerFmsVer,
 		"capabilities": 31.0,
 		"mode":         1.0,
 	})
 	amf0WriteObject(b, map[string]amf0Value{
-		"level":          "status",
-		"code":           "NetConnection.Connect.Success",
-		"description":    "Connection succeeded.",
-		"clientid":       "NGINX RTMP (github.com/sergey-dryabzhinsky/nginx-rtmp-module)",
+		"level":          amfLevelStatus,
+		"code":           amfCodeNetConnectionConnectSuccess,
+		"description":    amfDescConnectionSucceeded,
+		"clientid":       nfp.ServerClientID,
 		"objectEncoding": 0.0,
 	})
 	return c.writeRawMessage(csidCommand, messageHeader{
@@ -373,7 +377,7 @@ func psWriteResultConnect(c *Conn, txID float64) error {
 
 func psWriteResultCreateStream(c *Conn, txID float64, streamID uint32) error {
 	b := bytes.NewBuffer(nil)
-	amf0WriteString(b, "_result")
+	amf0WriteString(b, amfCmdResult)
 	amf0WriteNumber(b, txID)
 	amf0WriteNull(b)
 	amf0WriteNumber(b, float64(streamID))

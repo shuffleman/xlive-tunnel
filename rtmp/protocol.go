@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 )
 
@@ -119,13 +120,32 @@ func (c *Conn) ReadMessage() (*message, error) {
 }
 
 func buildConnectPayload(sessionID string) []byte {
+	fp := DefaultFingerprint()
+	app := sanitizeRTMPName(fp.AppBase)
+	tcURL := fp.TcURLScheme + fp.TcURLHost + "/" + app
+	return buildConnectPayloadWithAppAndTcURL(app, tcURL, fp)
+}
+
+func buildConnectPayloadForConn(sessionID string, streamName string, remote net.Addr, fp *Fingerprint) []byte {
+	nfp := normalizeFingerprint(fp)
+	app := buildConnectAppBaseFromStreamName(sessionID, streamName, &nfp)
+	host := hostFromAddr(remote)
+	if nfp.TcURLHost != "" && nfp.TcURLHost != defaultTcURLHost {
+		host = nfp.TcURLHost
+	} else if host == "" {
+		host = nfp.TcURLHost
+	}
+	return buildConnectPayloadWithAppAndTcURL(app, nfp.TcURLScheme+host+"/"+app, nfp)
+}
+
+func buildConnectPayloadWithAppAndTcURL(app string, tcURL string, fp Fingerprint) []byte {
 	b := bytes.NewBuffer(nil)
-	amf0WriteString(b, "connect")
+	amf0WriteString(b, amfCmdConnect)
 	amf0WriteNumber(b, 1)
 	amf0WriteObject(b, map[string]amf0Value{
-		"app":            "live/" + sessionID,
-		"flashVer":       "FMLE/3.0 (compatible; FMSc/1.0)",
-		"tcUrl":          "rtmp://localhost/live/" + sessionID,
+		"app":            app,
+		"flashVer":       fp.FlashVer,
+		"tcUrl":          tcURL,
 		"fpad":           false,
 		"capabilities":   15,
 		"audioCodecs":    3575,
@@ -138,7 +158,7 @@ func buildConnectPayload(sessionID string) []byte {
 
 func buildCreateStreamPayload() []byte {
 	b := bytes.NewBuffer(nil)
-	amf0WriteString(b, "createStream")
+	amf0WriteString(b, amfCmdCreateStream)
 	amf0WriteNumber(b, 2)
 	amf0WriteNull(b)
 	return b.Bytes()
@@ -146,7 +166,7 @@ func buildCreateStreamPayload() []byte {
 
 func buildFCPublishPayload(streamName string) []byte {
 	b := bytes.NewBuffer(nil)
-	amf0WriteString(b, "FCPublish")
+	amf0WriteString(b, amfCmdFCPublish)
 	amf0WriteNumber(b, 3)
 	amf0WriteNull(b)
 	amf0WriteString(b, streamName)
@@ -155,7 +175,7 @@ func buildFCPublishPayload(streamName string) []byte {
 
 func buildReleaseStreamPayload(streamName string) []byte {
 	b := bytes.NewBuffer(nil)
-	amf0WriteString(b, "releaseStream")
+	amf0WriteString(b, amfCmdReleaseStream)
 	amf0WriteNumber(b, 2)
 	amf0WriteNull(b)
 	amf0WriteString(b, streamName)
@@ -164,11 +184,11 @@ func buildReleaseStreamPayload(streamName string) []byte {
 
 func buildPublishPayload(streamName string) []byte {
 	b := bytes.NewBuffer(nil)
-	amf0WriteString(b, "publish")
+	amf0WriteString(b, amfCmdPublish)
 	amf0WriteNumber(b, 3)
 	amf0WriteNull(b)
 	amf0WriteString(b, streamName)
-	amf0WriteString(b, "live")
+	amf0WriteString(b, rtmpPublishTypeLive)
 	return b.Bytes()
 }
 
@@ -187,29 +207,119 @@ func parseCommandNameAndTxID(payload []byte) (name string, txID float64, err err
 	return name, txID, nil
 }
 
+func extractStreamNameFromPublish(payload []byte) (string, error) {
+	d := newAMF0Decoder(payload)
+	v0, err := d.readValue()
+	if err != nil {
+		return "", err
+	}
+	name, _ := v0.(string)
+	if name != amfCmdPublish {
+		return "", errors.New("rtmp: not publish")
+	}
+	if _, err := d.readValue(); err != nil {
+		return "", err
+	}
+	if _, err := d.readValue(); err != nil {
+		return "", err
+	}
+	v3, err := d.readValue()
+	if err != nil {
+		return "", err
+	}
+	streamName, _ := v3.(string)
+	if streamName == "" {
+		return "", errors.New("rtmp: missing stream name")
+	}
+	return streamName, nil
+}
+
+func extractSessionIDFromStreamName(streamName string) string {
+	i := strings.LastIndexByte(streamName, '_')
+	if i < 0 || i+1 >= len(streamName) {
+		return ""
+	}
+	sid := streamName[i+1:]
+	if isLikelySessionID(sid) {
+		return sid
+	}
+	return ""
+}
+
 // buildSetDataFramePayload builds the @setDataFrame onMetaData message.
 // Declares stream properties: 1920x1080 H.264 30fps 3Mbps + AAC 44100Hz 160kbps.
 // Real RTMP servers parse this to configure transcoders and recording.
-func buildSetDataFramePayload() []byte {
+func buildSetDataFramePayload(fp *Fingerprint) []byte {
+	nfp := normalizeFingerprint(fp)
 	b := bytes.NewBuffer(nil)
 	amf0WriteString(b, "@setDataFrame")
 	amf0WriteString(b, "onMetaData")
 	amf0WriteECMAArray(b, map[string]amf0Value{
 		"duration":        0.0,
-		"width":           1920.0,
-		"height":          1080.0,
-		"videodatarate":   3000.0,
-		"framerate":       30.0,
-		"videocodecid":    7.0,
-		"audiodatarate":   160.0,
-		"audiosamplerate": 44100.0,
-		"audiosamplesize": 16.0,
-		"stereo":          true,
-		"audiocodecid":    10.0,
-		"encoder":         "OBS Server",
+		"width":           nfp.Meta.Width,
+		"height":          nfp.Meta.Height,
+		"videodatarate":   nfp.Meta.VideoDataRate,
+		"framerate":       nfp.Meta.FrameRate,
+		"videocodecid":    nfp.Meta.VideoCodecID,
+		"audiodatarate":   nfp.Meta.AudioDataRate,
+		"audiosamplerate": nfp.Meta.AudioSampleRate,
+		"audiosamplesize": nfp.Meta.AudioSampleSize,
+		"stereo":          nfp.Meta.Stereo,
+		"audiocodecid":    nfp.Meta.AudioCodecID,
+		"encoder":         nfp.Encoder,
 		"fileSize":        0.0,
 	})
 	return b.Bytes()
+}
+
+func buildConnectAppFromStreamName(sessionID string, streamName string, fp *Fingerprint) string {
+	nfp := normalizeFingerprint(fp)
+	base := nfp.AppBase
+	if sessionID != "" && streamName != "" {
+		if trimmed, ok := strings.CutSuffix(streamName, "_"+sessionID); ok && trimmed != "" {
+			base = trimmed
+		} else if i := strings.IndexByte(streamName, '_'); i > 0 {
+			base = streamName[:i]
+		}
+	}
+	base = sanitizeRTMPName(base)
+	if base == "" {
+		base = nfp.AppBase
+	}
+	return base
+}
+
+func buildConnectAppBaseFromStreamName(sessionID string, streamName string, fp *Fingerprint) string {
+	return buildConnectAppFromStreamName(sessionID, streamName, fp)
+}
+
+func hostFromAddr(addr net.Addr) string {
+	if addr == nil {
+		return ""
+	}
+	s := addr.String()
+	if host, _, err := net.SplitHostPort(s); err == nil {
+		return host
+	}
+	return s
+}
+
+func sanitizeRTMPName(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-' {
+			b.WriteByte(c)
+			continue
+		}
+		b.WriteByte('_')
+	}
+	return strings.Trim(b.String(), "_")
 }
 
 func extractSessionIDFromConnect(payload []byte) (string, error) {
@@ -235,8 +345,32 @@ func extractSessionIDFromConnect(payload []byte) (string, error) {
 	}
 	for i := len(app) - 1; i >= 0; i-- {
 		if app[i] == '/' {
-			return app[i+1:], nil
+			sid := app[i+1:]
+			if isLikelySessionID(sid) {
+				return sid, nil
+			}
+			return "", nil
 		}
 	}
-	return app, nil
+	if isLikelySessionID(app) {
+		return app, nil
+	}
+	return "", nil
+}
+
+func isLikelySessionID(s string) bool {
+	if len(s) == 32 {
+		for i := 0; i < len(s); i++ {
+			c := s[i]
+			if c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F' {
+				continue
+			}
+			return false
+		}
+		return true
+	}
+	if len(s) == 36 && strings.Count(s, "-") == 4 {
+		return true
+	}
+	return false
 }

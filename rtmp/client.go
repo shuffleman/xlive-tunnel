@@ -11,10 +11,11 @@ import (
 )
 
 type ClientOptions struct {
-	ChunkSize  uint32
-	Enc        cipher.Stream
-	SessionID  string
-	StreamName string
+	ChunkSize   uint32
+	Enc         cipher.Stream
+	SessionID   string
+	StreamName  string
+	Fingerprint *Fingerprint
 }
 
 type Client struct {
@@ -24,6 +25,7 @@ type Client struct {
 	enc        cipher.Stream
 	sid        string
 	streamName string
+	fp         Fingerprint
 
 	writeMu         sync.Mutex
 	firstWrite      bool
@@ -57,6 +59,7 @@ func NewClient(raw net.Conn, opts ClientOptions) *Client {
 		enc:        opts.Enc,
 		sid:        opts.SessionID,
 		streamName: streamName,
+		fp:         normalizeFingerprint(opts.Fingerprint),
 		closeCh:    make(chan struct{}),
 		firstWrite: true,
 	}
@@ -79,11 +82,11 @@ func (c *Client) Start() error {
 		Timestamp:       0,
 		MessageTypeID:   messageTypeCommandAMF0,
 		MessageStreamID: 0,
-	}, buildConnectPayload(c.sid))
+	}, buildConnectPayloadForConn(c.sid, c.streamName, c.raw.RemoteAddr(), &c.fp))
 	if err != nil {
 		return err
 	}
-	_, err = c.waitCommand("_result", 1, 5*time.Second)
+	_, err = c.waitCommand(amfCmdResult, 1, 5*time.Second)
 	if err != nil {
 		return err
 	}
@@ -114,7 +117,7 @@ func (c *Client) Start() error {
 	if err != nil {
 		return err
 	}
-	_, err = c.waitCommand("_result", 2, 5*time.Second)
+	_, err = c.waitCommand(amfCmdResult, 2, 5*time.Second)
 	if err != nil {
 		return err
 	}
@@ -132,7 +135,7 @@ func (c *Client) Start() error {
 		Timestamp:       0,
 		MessageTypeID:   messageTypeCommandAMF0,
 		MessageStreamID: 1,
-	}, buildSetDataFramePayload())
+	}, buildSetDataFramePayload(&c.fp))
 	if err != nil {
 		return err
 	}
@@ -394,7 +397,6 @@ func (c *Client) Read(p []byte) (n int, err error) {
 
 func (c *Client) LocalAddr() net.Addr                { return c.raw.LocalAddr() }
 func (c *Client) RemoteAddr() net.Addr               { return c.raw.RemoteAddr() }
-func (c *Client) SetDeadline(t time.Time) error       { return c.raw.SetDeadline(t) }
-func (c *Client) SetReadDeadline(t time.Time) error   { return c.raw.SetReadDeadline(t) }
-func (c *Client) SetWriteDeadline(t time.Time) error  { return c.raw.SetWriteDeadline(t) }
-
+func (c *Client) SetDeadline(t time.Time) error      { return c.raw.SetDeadline(t) }
+func (c *Client) SetReadDeadline(t time.Time) error  { return c.raw.SetReadDeadline(t) }
+func (c *Client) SetWriteDeadline(t time.Time) error { return c.raw.SetWriteDeadline(t) }

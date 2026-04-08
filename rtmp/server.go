@@ -15,6 +15,7 @@ import (
 type ServerOptions struct {
 	ChunkSize       uint32
 	SelectDecryptor func(firstCiphertext []byte) (cipher.Stream, error)
+	Fingerprint     *Fingerprint
 }
 
 type ServerSession struct {
@@ -49,6 +50,8 @@ type Server struct {
 	lastAck       uint32
 	closeOnce     sync.Once
 	closeCh       chan struct{}
+
+	fp Fingerprint
 }
 
 var _ net.Conn = (*Server)(nil)
@@ -80,6 +83,7 @@ func NewServer(raw net.Conn, opts ServerOptions) (*Server, error) {
 		relayReady:    make(chan struct{}),
 		windowAckSize: 2500000,
 		closeCh:       make(chan struct{}),
+		fp:            normalizeFingerprint(opts.Fingerprint),
 	}
 	return s, nil
 }
@@ -119,7 +123,7 @@ func (s *Server) Start() (sessionID string, err error) {
 	}
 	for msg != nil {
 		cmd, _, err := parseCommandNameAndTxID(msg.Payload)
-		if err == nil && cmd == "connect" {
+		if err == nil && cmd == amfCmdConnect {
 			break
 		}
 		_, connectTx, msg, err = s.readCommandAny(5 * time.Second)
@@ -140,7 +144,7 @@ func (s *Server) Start() (sessionID string, err error) {
 		return "", fmt.Errorf("write connect result: %w", err)
 	}
 
-	_, createTx, _, err := s.readCommandWait("createStream", 5*time.Second)
+	_, createTx, _, err := s.readCommandWait(amfCmdCreateStream, 5*time.Second)
 	if err != nil {
 		return "", fmt.Errorf("read createStream: %w", err)
 	}
@@ -149,12 +153,21 @@ func (s *Server) Start() (sessionID string, err error) {
 		return "", fmt.Errorf("write createStream result: %w", err)
 	}
 
-	_, _, _, _ = s.readCommandWait("publish", 5*time.Second)
+	_, _, publishMsg, _ := s.readCommandWait(amfCmdPublish, 5*time.Second)
+	if s.sessionID == "" && publishMsg != nil {
+		if streamName, e := extractStreamNameFromPublish(publishMsg.Payload); e == nil {
+			if sid := extractSessionIDFromStreamName(streamName); sid != "" {
+				s.sessionID = sid
+			} else {
+				s.sessionID = streamName
+			}
+		}
+	}
 	_ = s.writeOnStatusPublishStart()
 
 	s.drainOnce.Do(func() { go s.drainLoop() })
 	go s.readLoop()
-	return sid, nil
+	return s.sessionID, nil
 }
 
 func (s *Server) readCommandAny(timeout time.Duration) (name string, txID float64, msg *message, err error) {
@@ -202,20 +215,20 @@ func (s *Server) readCommandWait(name string, timeout time.Duration) (cmd string
 
 func (s *Server) writeResultConnect(txID float64) error {
 	b := bytes.NewBuffer(nil)
-	amf0WriteString(b, "_result")
+	amf0WriteString(b, amfCmdResult)
 	amf0WriteNumber(b, txID)
 	// Properties object — matches nginx-rtmp ngx_rtmp_cmd_module.c
 	amf0WriteObject(b, map[string]amf0Value{
-		"fmsVer":       "FMS/3,0,1,123",
+		"fmsVer":       s.fp.ServerFmsVer,
 		"capabilities": 31.0,
 		"mode":         1.0,
 	})
 	// Information object — matches nginx-rtmp _result response
 	amf0WriteObject(b, map[string]amf0Value{
-		"level":          "status",
-		"code":           "NetConnection.Connect.Success",
-		"description":    "Connection succeeded.",
-		"clientid":       "NGINX RTMP (github.com/sergey-dryabzhinsky/nginx-rtmp-module)",
+		"level":          amfLevelStatus,
+		"code":           amfCodeNetConnectionConnectSuccess,
+		"description":    amfDescConnectionSucceeded,
+		"clientid":       s.fp.ServerClientID,
 		"objectEncoding": 0.0,
 	})
 	return s.c.writeRawMessage(csidCommand, messageHeader{
@@ -226,7 +239,7 @@ func (s *Server) writeResultConnect(txID float64) error {
 
 func (s *Server) writeResultCreateStream(txID float64, streamID uint32) error {
 	b := bytes.NewBuffer(nil)
-	amf0WriteString(b, "_result")
+	amf0WriteString(b, amfCmdResult)
 	amf0WriteNumber(b, txID)
 	amf0WriteNull(b)
 	amf0WriteNumber(b, float64(streamID))
@@ -238,15 +251,15 @@ func (s *Server) writeResultCreateStream(txID float64, streamID uint32) error {
 
 func (s *Server) writeOnStatusPublishStart() error {
 	b := bytes.NewBuffer(nil)
-	amf0WriteString(b, "onStatus")
+	amf0WriteString(b, amfCmdOnStatus)
 	amf0WriteNumber(b, 0)
 	amf0WriteNull(b)
 	// Matches nginx-rtmp ngx_rtmp_cmd_module.c: ngx_rtmp_cmd_publish_response
 	amf0WriteObject(b, map[string]amf0Value{
-		"level":       "status",
-		"code":        "NetStream.Publish.Start",
-		"description": "Start publishing",
-		"clientid":    "NGINX RTMP (github.com/sergey-dryabzhinsky/nginx-rtmp-module)",
+		"level":       amfLevelStatus,
+		"code":        amfCodeNetStreamPublishStart,
+		"description": amfDescStartPublishing,
+		"clientid":    s.fp.ServerClientID,
 	})
 	return s.c.writeRawMessage(csidCommand, messageHeader{
 		MessageTypeID:   messageTypeCommandAMF0,

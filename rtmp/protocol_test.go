@@ -7,7 +7,8 @@ import (
 
 func TestExtractSessionIDFromConnect(t *testing.T) {
 	sid := "abcdef0123456789abcdef0123456789"
-	p := buildConnectPayload(sid)
+	fp := DefaultFingerprint()
+	p := buildConnectPayloadWithAppAndTcURL("live/"+sid, "rtmp://localhost/live/"+sid, fp)
 	got, err := extractSessionIDFromConnect(p)
 	if err != nil {
 		t.Fatal(err)
@@ -23,7 +24,7 @@ func TestParseCommandNameAndTxID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if name != "createStream" || tx != 2 {
+	if name != amfCmdCreateStream || tx != 2 {
 		t.Fatalf("got name=%q tx=%v", name, tx)
 	}
 }

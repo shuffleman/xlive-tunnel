@@ -54,7 +54,7 @@ func TestChunkReaderFmt3WithoutInflight(t *testing.T) {
 
 func TestExtractSessionIDMissingApp(t *testing.T) {
 	b := bytes.NewBuffer(nil)
-	amf0WriteString(b, "connect")
+	amf0WriteString(b, amfCmdConnect)
 	amf0WriteNumber(b, 1)
 	amf0WriteObject(b, map[string]amf0Value{})
 	_, err := extractSessionIDFromConnect(b.Bytes())

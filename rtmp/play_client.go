@@ -12,10 +12,11 @@ import (
 )
 
 type PlayClientOptions struct {
-	ChunkSize  uint32
-	Dec        cipher.Stream
-	SessionID  string
-	StreamName string
+	ChunkSize   uint32
+	Dec         cipher.Stream
+	SessionID   string
+	StreamName  string
+	Fingerprint *Fingerprint
 }
 
 type PlayClient struct {
@@ -30,6 +31,7 @@ type PlayClient struct {
 	closed    bool
 	streamID  uint32
 	streamKey string
+	fp        Fingerprint
 }
 
 var _ net.Conn = (*PlayClient)(nil)
@@ -56,6 +58,7 @@ func DialPlay(raw net.Conn, opts PlayClientOptions) (*PlayClient, error) {
 		dec:       opts.Dec,
 		streamID:  1,
 		streamKey: streamName,
+		fp:        normalizeFingerprint(opts.Fingerprint),
 	}
 	if err := pc.start(opts.SessionID); err != nil {
 		_ = raw.Close()
@@ -75,10 +78,10 @@ func (c *PlayClient) start(sessionID string) error {
 	if err := c.c.writeRawMessage(csidCommand, messageHeader{
 		MessageTypeID:   messageTypeCommandAMF0,
 		MessageStreamID: 0,
-	}, buildConnectPayload(sessionID)); err != nil {
+	}, buildConnectPayloadForConn(sessionID, c.streamKey, c.raw.RemoteAddr(), &c.fp)); err != nil {
 		return err
 	}
-	if _, err := c.waitCommand("_result", 1, 5*time.Second); err != nil {
+	if _, err := c.waitCommand(amfCmdResult, 1, 5*time.Second); err != nil {
 		return err
 	}
 	if err := c.c.writeRawMessage(csidCommand, messageHeader{
@@ -87,12 +90,12 @@ func (c *PlayClient) start(sessionID string) error {
 	}, buildCreateStreamPayload()); err != nil {
 		return err
 	}
-	if _, err := c.waitCommand("_result", 2, 5*time.Second); err != nil {
+	if _, err := c.waitCommand(amfCmdResult, 2, 5*time.Second); err != nil {
 		return err
 	}
 
 	b := bytes.NewBuffer(nil)
-	amf0WriteString(b, "play")
+	amf0WriteString(b, amfCmdPlay)
 	amf0WriteNumber(b, 3)
 	amf0WriteNull(b)
 	amf0WriteString(b, c.streamKey)
