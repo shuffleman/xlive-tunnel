@@ -34,6 +34,7 @@ type PlayServer struct {
 	tmp             []byte
 	closed          bool
 	closeCh         chan struct{}
+	closeOnce       sync.Once
 }
 
 var _ net.Conn = (*PlayServer)(nil)
@@ -365,18 +366,17 @@ func (s *PlayServer) writeMessage(ts uint32, msgType uint8, csid uint32, body []
 
 func (s *PlayServer) Read(p []byte) (int, error) { return 0, io.EOF }
 func (s *PlayServer) Close() error {
-	s.closed = true
-	select {
-	case <-s.closeCh:
-	default:
+	var err error
+	s.closeOnce.Do(func() {
+		s.closed = true
 		close(s.closeCh)
-	}
-	err := s.raw.Close()
-	s.writeMu.Lock()
-	s.enc = nil
-	s.tmp = nil
-	s.c = nil
-	s.writeMu.Unlock()
+		err = s.raw.Close()
+		s.writeMu.Lock()
+		s.enc = nil
+		s.tmp = nil
+		s.c = nil
+		s.writeMu.Unlock()
+	})
 	return err
 }
 func (s *PlayServer) LocalAddr() net.Addr                { return s.raw.LocalAddr() }
