@@ -1,5 +1,10 @@
 package rtmp
 
+import (
+	"os"
+	"strconv"
+)
+
 type Fingerprint struct {
 	AppBase string
 
@@ -32,6 +37,12 @@ type Meta struct {
 }
 
 func DefaultFingerprint() Fingerprint {
+	videoKbps := float64(0)
+	if v := os.Getenv("XLIVE_VIDEO_KBPS"); v != "" {
+		if n, err := strconv.ParseFloat(v, 64); err == nil && n > 0 {
+			videoKbps = n
+		}
+	}
 	return Fingerprint{
 		AppBase:        defaultRTMPAppBase,
 		TcURLScheme:    defaultTcURLScheme,
@@ -43,9 +54,14 @@ func DefaultFingerprint() Fingerprint {
 		ServerFmsVer:   "FMS/3,0,1,123",
 		ServerClientID: "NGINX RTMP (github.com/sergey-dryabzhinsky/nginx-rtmp-module)",
 		Meta: Meta{
-			Width:           1920.0,
-			Height:          1080.0,
-			VideoDataRate:   3000.0,
+			Width:  1920.0,
+			Height: 1080.0,
+			VideoDataRate: func() float64 {
+				if videoKbps > 0 {
+					return videoKbps
+				}
+				return 20000.0
+			}(),
 			FrameRate:       30.0,
 			VideoCodecID:    7.0,
 			AudioDataRate:   160.0,

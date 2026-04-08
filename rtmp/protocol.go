@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"sync"
@@ -116,6 +117,9 @@ func (c *Conn) WriteAcknowledgement(sequence uint32) error {
 }
 
 func (c *Conn) ReadMessage() (*message, error) {
+	if c == nil || c.cr == nil {
+		return nil, io.ErrClosedPipe
+	}
 	return c.cr.ReadMessage()
 }
 

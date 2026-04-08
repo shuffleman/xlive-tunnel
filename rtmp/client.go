@@ -205,8 +205,12 @@ func (c *Client) waitCommand(name string, txID float64, timeout time.Duration) (
 }
 
 func (c *Client) readLoop() {
+	cc := c.c
+	if cc == nil {
+		return
+	}
 	for {
-		_, err := c.c.ReadMessage()
+		_, err := cc.ReadMessage()
 		if err != nil {
 			c.readOnce.Do(func() { c.readErr = err })
 			return
@@ -274,28 +278,21 @@ func (c *Client) writeVideoFrame(pending *[]byte) error {
 		base = sampleIDR
 	}
 
-	var nalus [][]byte
-	nalus = append(nalus, base)
-
-	var cipherChunk []byte
-	maxCipher := c.maxCipherPerVideoFrame(len(base))
-	if maxCipher > 0 && len(*pending) > 0 {
+	nalus := [][]byte{base}
+	if len(*pending) > 0 && c.enc != nil {
+		target := c.targetVideoBodySize()
+		maxCipher := c.maxCipherForTarget(target, len(base))
 		if maxCipher > len(*pending) {
 			maxCipher = len(*pending)
 		}
-		cipherChunk = make([]byte, maxCipher)
-		c.enc.XORKeyStream(cipherChunk, (*pending)[:maxCipher])
-		*pending = (*pending)[maxCipher:]
-		nalus = append(nalus, buildSEIUserDataUnregistered(cipherChunk))
+		if maxCipher > 0 {
+			ct := make([]byte, maxCipher)
+			c.enc.XORKeyStream(ct, (*pending)[:maxCipher])
+			*pending = (*pending)[maxCipher:]
+			nalus = append(nalus, buildSEIUserDataUnregistered(ct))
+		}
 	}
-
 	body := buildAVCVideoBody(frameType, nalus...)
-	target := c.targetVideoBodySize()
-	if pad := target - len(body); pad > 0 {
-		filler := buildFillerNALU(pad - 4)
-		body = buildAVCVideoBody(frameType, append(nalus, filler)...)
-	}
-
 	return c.writeMessage(c.videoTS, messageTypeVideo, csidVideo, body)
 }
 
@@ -313,13 +310,25 @@ func (c *Client) targetVideoBodySize() int {
 	return 5 + bytesPerFrame
 }
 
-func (c *Client) maxCipherPerVideoFrame(baseNALULen int) int {
-	target := c.targetVideoBodySize()
-	overhead := 5 + (4 + baseNALULen)
-	seiOverhead := 4 + 1 + 2 + 16 + 1
-	max := target - overhead - seiOverhead
-	if max < 0 {
+func (c *Client) maxCipherForTarget(target int, baseNALULen int) int {
+	if target <= 0 {
 		return 0
+	}
+	max := target - baseNALULen - 64
+	if max <= 0 {
+		return 0
+	}
+	for i := 0; i < 4; i++ {
+		payloadLen := 16 + max
+		sizeFieldLen := payloadLen/255 + 1
+		need := baseNALULen + max + sizeFieldLen + 64
+		if need <= target {
+			return max
+		}
+		max -= need - target
+		if max <= 0 {
+			return 0
+		}
 	}
 	return max
 }

@@ -253,11 +253,10 @@ func (s *PlayServer) writeVideoFrame(pending *[]byte) error {
 		base = sampleIDR
 	}
 
-	var nalus [][]byte
-	nalus = append(nalus, base)
-
+	nalus := [][]byte{base}
 	if s.enc != nil && len(*pending) > 0 {
-		maxCipher := s.maxCipherPerVideoFrame(len(base))
+		target := s.targetVideoBodySize()
+		maxCipher := s.maxCipherForTarget(target, len(base))
 		if maxCipher > len(*pending) {
 			maxCipher = len(*pending)
 		}
@@ -268,14 +267,7 @@ func (s *PlayServer) writeVideoFrame(pending *[]byte) error {
 			nalus = append(nalus, buildSEIUserDataUnregistered(ct))
 		}
 	}
-
 	body := buildAVCVideoBody(frameType, nalus...)
-	target := s.targetVideoBodySize()
-	if pad := target - len(body); pad > 0 {
-		filler := buildFillerNALU(pad - 4)
-		body = buildAVCVideoBody(frameType, append(nalus, filler)...)
-	}
-
 	return s.writeMessage(s.videoTS, messageTypeVideo, csidVideo, body)
 }
 
@@ -293,13 +285,25 @@ func (s *PlayServer) targetVideoBodySize() int {
 	return 5 + bytesPerFrame
 }
 
-func (s *PlayServer) maxCipherPerVideoFrame(baseNALULen int) int {
-	target := s.targetVideoBodySize()
-	overhead := 5 + (4 + baseNALULen)
-	seiOverhead := 4 + 1 + 2 + 16 + 1
-	max := target - overhead - seiOverhead
-	if max < 0 {
+func (s *PlayServer) maxCipherForTarget(target int, baseNALULen int) int {
+	if target <= 0 {
 		return 0
+	}
+	max := target - baseNALULen - 64
+	if max <= 0 {
+		return 0
+	}
+	for i := 0; i < 4; i++ {
+		payloadLen := 16 + max
+		sizeFieldLen := payloadLen/255 + 1
+		need := baseNALULen + max + sizeFieldLen + 64
+		if need <= target {
+			return max
+		}
+		max -= need - target
+		if max <= 0 {
+			return 0
+		}
 	}
 	return max
 }
