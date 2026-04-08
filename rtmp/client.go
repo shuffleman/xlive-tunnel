@@ -28,9 +28,10 @@ type Client struct {
 	fp         Fingerprint
 
 	writeMu         sync.Mutex
-	firstWrite      bool
-	writeCounter    uint32
 	videoFrameCount uint32
+	audioTS         uint32
+	videoTS         uint32
+	dataIn          chan []byte
 
 	readOnce sync.Once
 	readErr  error
@@ -43,7 +44,7 @@ var _ net.Conn = (*Client)(nil)
 
 func NewClient(raw net.Conn, opts ClientOptions) *Client {
 	if opts.ChunkSize == 0 {
-		opts.ChunkSize = 262144
+		opts.ChunkSize = 4096
 	}
 	streamName := opts.StreamName
 	if streamName == "" {
@@ -61,7 +62,7 @@ func NewClient(raw net.Conn, opts ClientOptions) *Client {
 		streamName: streamName,
 		fp:         normalizeFingerprint(opts.Fingerprint),
 		closeCh:    make(chan struct{}),
-		firstWrite: true,
+		dataIn:     make(chan []byte, 256),
 	}
 }
 
@@ -162,6 +163,7 @@ func (c *Client) Start() error {
 		return err
 	}
 
+	go c.pacer()
 	go c.readLoop()
 	return nil
 }
@@ -212,93 +214,122 @@ func (c *Client) readLoop() {
 	}
 }
 
-// Write sends proxy data as interleaved Video (H.264) and Audio (AAC) frames.
-// The first write always goes through Audio to allow server-side key detection
-// (the VLESS header naturally provides the 0x00 + UUID probe pattern).
-// Subsequent writes alternate at ~90% Video / ~10% Audio ratio.
 func (c *Client) Write(p []byte) (n int, err error) {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
 	if len(p) == 0 {
 		return 0, nil
 	}
-	if c.enc == nil {
+	c.writeMu.Lock()
+	encOK := c.enc != nil
+	c.writeMu.Unlock()
+	if !encOK {
 		return 0, errors.New("rtmp: nil encryptor")
 	}
-
-	maxPayload := DefaultMaxFramePayload
-	if maxPayload < 1024 {
-		maxPayload = 1024
+	cp := make([]byte, len(p))
+	copy(cp, p)
+	select {
+	case <-c.closeCh:
+		return 0, io.ErrClosedPipe
+	case c.dataIn <- cp:
+		return len(p), nil
 	}
-	if maxPayload > 4*1024*1024 {
-		maxPayload = 4 * 1024 * 1024
-	}
-
-	off := 0
-	for off < len(p) {
-		end := off + maxPayload
-		if end > len(p) {
-			end = len(p)
-		}
-		wn, werr := c.writeOnce(p[off:end])
-		n += wn
-		if werr != nil {
-			return n, werr
-		}
-		off = end
-	}
-	return n, nil
 }
 
-func (c *Client) writeOnce(p []byte) (n int, err error) {
-	var hdr []byte
-	var msgType uint8
-	var csid uint32
+func (c *Client) pacer() {
+	audioTicker := time.NewTicker(23 * time.Millisecond)
+	videoTicker := time.NewTicker(33 * time.Millisecond)
+	defer audioTicker.Stop()
+	defer videoTicker.Stop()
 
-	if c.firstWrite {
-		// First write MUST be Audio for server key detection.
-		// The encrypted VLESS header (0x00 + UUID + ...) serves as the probe.
-		c.firstWrite = false
-		hdr = []byte{aacSoundFormat, aacPacketRaw} // 0xAF 0x01
-		msgType = messageTypeAudio
-		csid = csidAudio
-	} else {
-		c.writeCounter++
-		if c.writeCounter%10 == 0 {
-			// ~10% of writes go to Audio
-			hdr = []byte{aacSoundFormat, aacPacketRaw}
-			msgType = messageTypeAudio
-			csid = csidAudio
-		} else {
-			// ~90% of writes go to Video
-			frameType := byte(avcFrameInter)
-			c.videoFrameCount++
-			// Keyframe every ~60 video frames (~2 seconds at 30fps)
-			if c.videoFrameCount%60 == 0 {
-				frameType = avcFrameKeyframe
-			}
-			// AVC NALU header: [frameType|codecID][avcPacketType=NALU][compTime 3B][NALU length 4B]
-			var hb [9]byte
-			hb[0] = frameType
-			hb[1] = avcPacketNALU
-			// hdr[2:5] = compositionTime = 0 (no B-frames)
-			binary.BigEndian.PutUint32(hb[5:9], uint32(len(p)))
-			hdr = hb[:]
-			msgType = messageTypeVideo
-			csid = csidVideo
+	var pending []byte
+	for {
+		select {
+		case <-c.closeCh:
+			return
+		case b := <-c.dataIn:
+			pending = append(pending, b...)
+		case <-audioTicker.C:
+			_ = c.writeAudioFrame()
+			c.audioTS += 23
+		case <-videoTicker.C:
+			_ = c.writeVideoFrame(&pending)
+			c.videoTS += 33
 		}
 	}
-
-	err = c.writeFrame(msgType, csid, hdr, p)
-	if err != nil {
-		return 0, err
-	}
-	return len(p), nil
 }
 
-// writeFrame writes a generic RTMP message with codec header + encrypted payload,
-// handling chunked transmission with on-the-fly CFB encryption.
-func (c *Client) writeFrame(msgType uint8, csid uint32, hdr []byte, payload []byte) error {
+func (c *Client) writeAudioFrame() error {
+	body := make([]byte, 2+len(sampleAACRaw))
+	body[0] = aacSoundFormat
+	body[1] = aacPacketRaw
+	copy(body[2:], sampleAACRaw)
+	return c.writeMessage(c.audioTS, messageTypeAudio, csidAudio, body)
+}
+
+func (c *Client) writeVideoFrame(pending *[]byte) error {
+	c.videoFrameCount++
+	frameType := byte(avcFrameInter)
+	base := sampleP
+	if c.videoFrameCount%60 == 0 {
+		frameType = avcFrameKeyframe
+		base = sampleIDR
+	}
+
+	var nalus [][]byte
+	nalus = append(nalus, base)
+
+	var cipherChunk []byte
+	maxCipher := c.maxCipherPerVideoFrame(len(base))
+	if maxCipher > 0 && len(*pending) > 0 {
+		if maxCipher > len(*pending) {
+			maxCipher = len(*pending)
+		}
+		cipherChunk = make([]byte, maxCipher)
+		c.enc.XORKeyStream(cipherChunk, (*pending)[:maxCipher])
+		*pending = (*pending)[maxCipher:]
+		nalus = append(nalus, buildSEIUserDataUnregistered(cipherChunk))
+	}
+
+	body := buildAVCVideoBody(frameType, nalus...)
+	target := c.targetVideoBodySize()
+	if pad := target - len(body); pad > 0 {
+		filler := buildFillerNALU(pad - 4)
+		body = buildAVCVideoBody(frameType, append(nalus, filler)...)
+	}
+
+	return c.writeMessage(c.videoTS, messageTypeVideo, csidVideo, body)
+}
+
+func (c *Client) targetVideoBodySize() int {
+	dr := c.fp.Meta.VideoDataRate
+	fr := c.fp.Meta.FrameRate
+	if dr <= 0 || fr <= 0 {
+		return 5 + 4 + len(sampleP)
+	}
+	bytesPerSec := int(dr * 1000 / 8)
+	bytesPerFrame := bytesPerSec / int(fr)
+	if bytesPerFrame < 512 {
+		bytesPerFrame = 512
+	}
+	return 5 + bytesPerFrame
+}
+
+func (c *Client) maxCipherPerVideoFrame(baseNALULen int) int {
+	target := c.targetVideoBodySize()
+	overhead := 5 + (4 + baseNALULen)
+	seiOverhead := 4 + 1 + 2 + 16 + 1
+	max := target - overhead - seiOverhead
+	if max < 0 {
+		return 0
+	}
+	return max
+}
+
+func (c *Client) writeMessage(ts uint32, msgType uint8, csid uint32, body []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if c.c == nil {
+		return io.ErrClosedPipe
+	}
 	c.c.mu.Lock()
 	defer c.c.mu.Unlock()
 
@@ -308,17 +339,15 @@ func (c *Client) writeFrame(msgType uint8, csid uint32, hdr []byte, payload []by
 		c.tmp = make([]byte, chunkSize)
 	}
 
-	totalLen := uint32(len(hdr) + len(payload))
+	totalLen := uint32(len(body))
 	h := messageHeader{
-		Timestamp:       uint32(time.Now().UnixMilli() % 0xFFFFFF),
+		Timestamp:       ts,
 		MessageTypeID:   msgType,
 		MessageStreamID: 1,
 	}
 	h.MessageLength = totalLen
 
 	remaining := totalLen
-	hdrOff := 0
-	plainOff := 0
 	first := true
 
 	for remaining > 0 {
@@ -341,33 +370,12 @@ func (c *Client) writeFrame(msgType uint8, csid uint32, hdr []byte, payload []by
 			}
 		}
 
-		// Write plaintext codec header bytes first
-		for hdrOff < len(hdr) && chunkLen > 0 {
-			n := chunkLen
-			if uint32(len(hdr)-hdrOff) < n {
-				n = uint32(len(hdr) - hdrOff)
-			}
-			if _, err := cw.w.Write(hdr[hdrOff : hdrOff+int(n)]); err != nil {
-				return err
-			}
-			hdrOff += int(n)
-			chunkLen -= n
-			remaining -= n
+		n := int(chunkLen)
+		off := int(totalLen - remaining)
+		if _, err := cw.w.Write(body[off : off+n]); err != nil {
+			return err
 		}
-
-		// Write encrypted payload data
-		if chunkLen > 0 && plainOff < len(payload) {
-			n := int(chunkLen)
-			if len(payload)-plainOff < n {
-				n = len(payload) - plainOff
-			}
-			c.enc.XORKeyStream(c.tmp[:n], payload[plainOff:plainOff+n])
-			if _, err := cw.w.Write(c.tmp[:n]); err != nil {
-				return err
-			}
-			plainOff += n
-			remaining -= uint32(n)
-		}
+		remaining -= uint32(n)
 	}
 
 	if c.c.bw != nil {

@@ -6,6 +6,9 @@ type Fingerprint struct {
 	TcURLScheme string
 	TcURLHost   string
 
+	SwfURL  string
+	PageURL string
+
 	FlashVer string
 	Encoder  string
 
@@ -33,6 +36,8 @@ func DefaultFingerprint() Fingerprint {
 		AppBase:        defaultRTMPAppBase,
 		TcURLScheme:    defaultTcURLScheme,
 		TcURLHost:      defaultTcURLHost,
+		SwfURL:         "",
+		PageURL:        "",
 		FlashVer:       rtmpFlashVerFMLE,
 		Encoder:        rtmpEncoderOBS,
 		ServerFmsVer:   "FMS/3,0,1,123",
@@ -66,6 +71,12 @@ func normalizeFingerprint(fp *Fingerprint) Fingerprint {
 	}
 	if fp.TcURLHost != "" {
 		out.TcURLHost = fp.TcURLHost
+	}
+	if fp.SwfURL != "" {
+		out.SwfURL = fp.SwfURL
+	}
+	if fp.PageURL != "" {
+		out.PageURL = fp.PageURL
 	}
 	if fp.FlashVer != "" {
 		out.FlashVer = fp.FlashVer

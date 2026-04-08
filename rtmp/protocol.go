@@ -145,12 +145,14 @@ func buildConnectPayloadWithAppAndTcURL(app string, tcURL string, fp Fingerprint
 	amf0WriteObject(b, map[string]amf0Value{
 		"app":            app,
 		"flashVer":       fp.FlashVer,
+		"swfUrl":         fp.SwfURL,
 		"tcUrl":          tcURL,
 		"fpad":           false,
 		"capabilities":   15,
 		"audioCodecs":    3575,
 		"videoCodecs":    252,
 		"videoFunction":  1,
+		"pageUrl":        fp.PageURL,
 		"objectEncoding": 0,
 	})
 	return b.Bytes()

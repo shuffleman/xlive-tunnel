@@ -27,18 +27,20 @@ type PlayServer struct {
 	fp         Fingerprint
 
 	writeMu         sync.Mutex
-	firstWrite      bool
-	writeCounter    uint32
 	videoFrameCount uint32
+	audioTS         uint32
+	videoTS         uint32
+	dataIn          chan []byte
 	tmp             []byte
 	closed          bool
+	closeCh         chan struct{}
 }
 
 var _ net.Conn = (*PlayServer)(nil)
 
 func NewPlayServer(raw net.Conn, opts PlayServerOptions) *PlayServer {
 	if opts.ChunkSize == 0 {
-		opts.ChunkSize = 262144
+		opts.ChunkSize = 4096
 	}
 	c := newConn(raw)
 	c.cw.SetChunkSize(opts.ChunkSize)
@@ -48,7 +50,8 @@ func NewPlayServer(raw net.Conn, opts PlayServerOptions) *PlayServer {
 		enc:        opts.Enc,
 		streamName: opts.StreamName,
 		fp:         normalizeFingerprint(opts.Fingerprint),
-		firstWrite: true,
+		dataIn:     make(chan []byte, 256),
+		closeCh:    make(chan struct{}),
 	}
 	return ps
 }
@@ -126,6 +129,7 @@ func (s *PlayServer) Start() error {
 	}, buildAVCSeqHdrMessage()); err != nil {
 		return err
 	}
+	go s.pacer()
 	return nil
 }
 
@@ -195,7 +199,117 @@ func (s *PlayServer) readCommandWait(name string, timeout time.Duration) (cmd st
 	}
 }
 
-func (s *PlayServer) writeFrame(msgType uint8, csid uint32, hdr []byte, payload []byte) error {
+func (s *PlayServer) Write(p []byte) (n int, err error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	cp := make([]byte, len(p))
+	copy(cp, p)
+	select {
+	case <-s.closeCh:
+		return 0, io.ErrClosedPipe
+	case s.dataIn <- cp:
+		return len(p), nil
+	}
+}
+
+func (s *PlayServer) pacer() {
+	audioTicker := time.NewTicker(23 * time.Millisecond)
+	videoTicker := time.NewTicker(33 * time.Millisecond)
+	defer audioTicker.Stop()
+	defer videoTicker.Stop()
+
+	var pending []byte
+	for {
+		select {
+		case <-s.closeCh:
+			return
+		case b := <-s.dataIn:
+			pending = append(pending, b...)
+		case <-audioTicker.C:
+			_ = s.writeAudioFrame()
+			s.audioTS += 23
+		case <-videoTicker.C:
+			_ = s.writeVideoFrame(&pending)
+			s.videoTS += 33
+		}
+	}
+}
+
+func (s *PlayServer) writeAudioFrame() error {
+	body := make([]byte, 2+len(sampleAACRaw))
+	body[0] = aacSoundFormat
+	body[1] = aacPacketRaw
+	copy(body[2:], sampleAACRaw)
+	return s.writeMessage(s.audioTS, messageTypeAudio, csidAudio, body)
+}
+
+func (s *PlayServer) writeVideoFrame(pending *[]byte) error {
+	s.videoFrameCount++
+	frameType := byte(avcFrameInter)
+	base := sampleP
+	if s.videoFrameCount%60 == 0 {
+		frameType = avcFrameKeyframe
+		base = sampleIDR
+	}
+
+	var nalus [][]byte
+	nalus = append(nalus, base)
+
+	if s.enc != nil && len(*pending) > 0 {
+		maxCipher := s.maxCipherPerVideoFrame(len(base))
+		if maxCipher > len(*pending) {
+			maxCipher = len(*pending)
+		}
+		if maxCipher > 0 {
+			ct := make([]byte, maxCipher)
+			s.enc.XORKeyStream(ct, (*pending)[:maxCipher])
+			*pending = (*pending)[maxCipher:]
+			nalus = append(nalus, buildSEIUserDataUnregistered(ct))
+		}
+	}
+
+	body := buildAVCVideoBody(frameType, nalus...)
+	target := s.targetVideoBodySize()
+	if pad := target - len(body); pad > 0 {
+		filler := buildFillerNALU(pad - 4)
+		body = buildAVCVideoBody(frameType, append(nalus, filler)...)
+	}
+
+	return s.writeMessage(s.videoTS, messageTypeVideo, csidVideo, body)
+}
+
+func (s *PlayServer) targetVideoBodySize() int {
+	dr := s.fp.Meta.VideoDataRate
+	fr := s.fp.Meta.FrameRate
+	if dr <= 0 || fr <= 0 {
+		return 5 + 4 + len(sampleP)
+	}
+	bytesPerSec := int(dr * 1000 / 8)
+	bytesPerFrame := bytesPerSec / int(fr)
+	if bytesPerFrame < 512 {
+		bytesPerFrame = 512
+	}
+	return 5 + bytesPerFrame
+}
+
+func (s *PlayServer) maxCipherPerVideoFrame(baseNALULen int) int {
+	target := s.targetVideoBodySize()
+	overhead := 5 + (4 + baseNALULen)
+	seiOverhead := 4 + 1 + 2 + 16 + 1
+	max := target - overhead - seiOverhead
+	if max < 0 {
+		return 0
+	}
+	return max
+}
+
+func (s *PlayServer) writeMessage(ts uint32, msgType uint8, csid uint32, body []byte) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if s.c == nil {
+		return io.ErrClosedPipe
+	}
 	s.c.mu.Lock()
 	defer s.c.mu.Unlock()
 	cw := s.c.cw
@@ -203,21 +317,17 @@ func (s *PlayServer) writeFrame(msgType uint8, csid uint32, hdr []byte, payload 
 	if cap(s.tmp) < int(chunkSize) {
 		s.tmp = make([]byte, chunkSize)
 	}
-	tmp := s.tmp[:chunkSize]
 
-	totalLen := uint32(len(hdr) + len(payload))
+	totalLen := uint32(len(body))
 	h := messageHeader{
-		Timestamp:       uint32(time.Now().UnixMilli() % 0xFFFFFF),
+		Timestamp:       ts,
 		MessageTypeID:   msgType,
 		MessageStreamID: 1,
 	}
 	h.MessageLength = totalLen
 
 	remaining := totalLen
-	hdrOff := 0
-	plainOff := 0
 	first := true
-
 	for remaining > 0 {
 		cl := chunkSize
 		if remaining < cl {
@@ -236,30 +346,12 @@ func (s *PlayServer) writeFrame(msgType uint8, csid uint32, hdr []byte, payload 
 				return err
 			}
 		}
-		for hdrOff < len(hdr) && cl > 0 {
-			n := cl
-			if uint32(len(hdr)-hdrOff) < n {
-				n = uint32(len(hdr) - hdrOff)
-			}
-			if _, err := cw.w.Write(hdr[hdrOff : hdrOff+int(n)]); err != nil {
-				return err
-			}
-			hdrOff += int(n)
-			cl -= n
-			remaining -= n
+		n := int(cl)
+		off := int(totalLen - remaining)
+		if _, err := cw.w.Write(body[off : off+n]); err != nil {
+			return err
 		}
-		if cl > 0 && plainOff < len(payload) {
-			n := int(cl)
-			if len(payload)-plainOff < n {
-				n = len(payload) - plainOff
-			}
-			s.enc.XORKeyStream(tmp[:n], payload[plainOff:plainOff+n])
-			if _, err := cw.w.Write(tmp[:n]); err != nil {
-				return err
-			}
-			plainOff += n
-			remaining -= uint32(n)
-		}
+		remaining -= uint32(n)
 	}
 	if s.c.bw != nil {
 		return s.c.bw.Flush()
@@ -267,77 +359,14 @@ func (s *PlayServer) writeFrame(msgType uint8, csid uint32, hdr []byte, payload 
 	return nil
 }
 
-func (s *PlayServer) Write(p []byte) (n int, err error) {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	if s.enc == nil {
-		return 0, errors.New("rtmp: nil encryptor")
-	}
-	if len(p) == 0 {
-		return 0, nil
-	}
-	maxPayload := DefaultMaxFramePayload
-	if maxPayload < 1024 {
-		maxPayload = 1024
-	}
-	if maxPayload > 4*1024*1024 {
-		maxPayload = 4 * 1024 * 1024
-	}
-	off := 0
-	for off < len(p) {
-		end := off + maxPayload
-		if end > len(p) {
-			end = len(p)
-		}
-		wn, werr := s.writeOnce(p[off:end])
-		n += wn
-		if werr != nil {
-			return n, werr
-		}
-		off = end
-	}
-	return n, nil
-}
-
-func (s *PlayServer) writeOnce(p []byte) (n int, err error) {
-	var hdr []byte
-	var msgType uint8
-	var csid uint32
-	if s.firstWrite {
-		s.firstWrite = false
-		hdr = []byte{aacSoundFormat, aacPacketRaw}
-		msgType = messageTypeAudio
-		csid = csidAudio
-	} else {
-		s.writeCounter++
-		if s.writeCounter%10 == 0 {
-			hdr = []byte{aacSoundFormat, aacPacketRaw}
-			msgType = messageTypeAudio
-			csid = csidAudio
-		} else {
-			frameType := byte(avcFrameInter)
-			s.videoFrameCount++
-			if s.videoFrameCount%60 == 0 {
-				frameType = avcFrameKeyframe
-			}
-			var hb [9]byte
-			hb[0] = frameType
-			hb[1] = avcPacketNALU
-			binary.BigEndian.PutUint32(hb[5:9], uint32(len(p)))
-			hdr = hb[:]
-			msgType = messageTypeVideo
-			csid = csidVideo
-		}
-	}
-	if err := s.writeFrame(msgType, csid, hdr, p); err != nil {
-		return 0, err
-	}
-	return len(p), nil
-}
-
 func (s *PlayServer) Read(p []byte) (int, error) { return 0, io.EOF }
 func (s *PlayServer) Close() error {
 	s.closed = true
+	select {
+	case <-s.closeCh:
+	default:
+		close(s.closeCh)
+	}
 	err := s.raw.Close()
 	s.writeMu.Lock()
 	s.enc = nil

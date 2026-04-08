@@ -172,26 +172,22 @@ func (c *PlayClient) Read(p []byte) (n int, err error) {
 				c.c.cr.SetChunkSize(size)
 			}
 		case messageTypeAudio:
-			if len(m.Payload) < 2 {
-				continue
-			}
-			if m.Payload[1] != aacPacketRaw {
-				continue
-			}
-			c.src = m.Payload[2:]
-			c.srcOff = 0
+			continue
 		case messageTypeVideo:
-			if len(m.Payload) < 9 {
+			nalus := parseAVCNALUs(m.Payload)
+			if len(nalus) == 0 {
 				continue
 			}
-			if m.Payload[1] != avcPacketNALU {
+			var ct []byte
+			for _, n := range nalus {
+				if b, ok := extractSEIUserDataUnregistered(n); ok && len(b) > 0 {
+					ct = append(ct, b...)
+				}
+			}
+			if len(ct) == 0 {
 				continue
 			}
-			naluLen := int(binary.BigEndian.Uint32(m.Payload[5:9]))
-			if 9+naluLen > len(m.Payload) {
-				continue
-			}
-			c.src = m.Payload[9 : 9+naluLen]
+			c.src = ct
 			c.srcOff = 0
 		default:
 		}

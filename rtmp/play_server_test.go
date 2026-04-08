@@ -2,7 +2,6 @@ package rtmp
 
 import (
 	"bytes"
-	"encoding/binary"
 	"io"
 	"net"
 	"testing"
@@ -115,23 +114,13 @@ loop2:
 			t.Fatal(err)
 		}
 		switch m.Header.MessageTypeID {
-		case messageTypeAudio:
-			if len(m.Payload) >= 2 {
-				if m.Payload[1] == aacPacketRaw {
-					data := append([]byte(nil), m.Payload[2:]...)
+		case messageTypeVideo:
+			nalus := parseAVCNALUs(m.Payload)
+			for _, n := range nalus {
+				if ct, ok := extractSEIUserDataUnregistered(n); ok && len(ct) > 0 {
+					data := append([]byte(nil), ct...)
 					dec.XORKeyStream(data, data)
 					got = append(got, data...)
-				}
-			}
-		case messageTypeVideo:
-			if len(m.Payload) >= 9 {
-				if m.Payload[1] == avcPacketNALU {
-					n := int(binary.BigEndian.Uint32(m.Payload[5:9]))
-					if 9+n <= len(m.Payload) {
-						data := append([]byte(nil), m.Payload[9:9+n]...)
-						dec.XORKeyStream(data, data)
-						got = append(got, data...)
-					}
 				}
 			}
 		default:

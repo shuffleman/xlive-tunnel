@@ -46,6 +46,8 @@ type Server struct {
 	relayReady chan struct{}
 
 	bytesReceived uint32
+	xliveExpected bool
+
 	windowAckSize uint32
 	lastAck       uint32
 	closeOnce     sync.Once
@@ -163,6 +165,7 @@ func (s *Server) Start() (sessionID string, err error) {
 			}
 		}
 	}
+	s.xliveExpected = isLikelySessionID(s.sessionID)
 	_ = s.writeOnStatusPublishStart()
 
 	s.drainOnce.Do(func() { go s.drainLoop() })
@@ -345,6 +348,9 @@ func (s *Server) enterRelayMode() {
 
 // handleAudioMessage processes Audio messages (AAC format).
 func (s *Server) handleAudioMessage(msg *message) {
+	if s.xliveExpected {
+		return
+	}
 	if len(msg.Payload) < 2 {
 		return
 	}
@@ -402,24 +408,46 @@ func (s *Server) handleVideoMessage(msg *message) {
 		return
 	}
 
+	nalus := parseAVCNALUs(msg.Payload)
+	if len(nalus) == 0 {
+		return
+	}
+
+	var extracted [][]byte
+	for _, n := range nalus {
+		if ct, ok := extractSEIUserDataUnregistered(n); ok && len(ct) > 0 {
+			extracted = append(extracted, ct)
+		}
+	}
+	if len(extracted) == 0 {
+		return
+	}
+
 	if s.dec == nil {
-		return
+		dec, err := s.selectDec(extracted[0])
+		if err != nil {
+			if !s.xliveExpected {
+				s.enterRelayMode()
+			}
+			return
+		}
+		s.dec = dec
+		select {
+		case <-s.xliveReady:
+		default:
+			close(s.xliveReady)
+		}
 	}
 
-	const avcHdrLen = 5 + 4
-	if len(msg.Payload) < avcHdrLen {
-		return
-	}
-
-	data := msg.Payload[avcHdrLen:]
-	if len(data) == 0 {
-		return
-	}
-
-	s.dec.XORKeyStream(data, data)
-	select {
-	case s.dataCh <- data:
-	case <-s.closeCh:
+	for _, ct := range extracted {
+		pt := make([]byte, len(ct))
+		copy(pt, ct)
+		s.dec.XORKeyStream(pt, pt)
+		select {
+		case s.dataCh <- pt:
+		case <-s.closeCh:
+			return
+		}
 	}
 }
 
