@@ -238,7 +238,7 @@ func (c *Client) Write(p []byte) (n int, err error) {
 	}
 }
 
-const maxPendingSize = 4 << 20 // 4MB cap for pending cipher data
+const maxPendingSize = 4 << 20 // 4MB: stop reading dataIn when pending exceeds this
 
 func (c *Client) pacer() {
 	audioTicker := time.NewTicker(23 * time.Millisecond)
@@ -248,15 +248,27 @@ func (c *Client) pacer() {
 
 	var pending []byte
 	for {
+		// When pending is too large, stop reading from dataIn so that
+		// dataIn fills up and Write() blocks (natural backpressure).
+		// Only drain pending via video frames until it shrinks.
+		if len(pending) > maxPendingSize {
+			select {
+			case <-c.closeCh:
+				return
+			case <-audioTicker.C:
+				_ = c.writeAudioFrame()
+				c.audioTS += 23
+			case <-videoTicker.C:
+				_ = c.writeVideoFrame(&pending)
+				c.videoTS += 33
+			}
+			continue
+		}
 		select {
 		case <-c.closeCh:
 			return
 		case b := <-c.dataIn:
 			pending = append(pending, b...)
-			if len(pending) > maxPendingSize {
-				// Drop oldest data to prevent unbounded growth
-				pending = pending[len(pending)-maxPendingSize:]
-			}
 		case <-audioTicker.C:
 			_ = c.writeAudioFrame()
 			c.audioTS += 23
