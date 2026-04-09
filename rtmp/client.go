@@ -36,8 +36,6 @@ type Client struct {
 	readOnce sync.Once
 	readErr  error
 	closeCh  chan struct{}
-
-	tmp []byte
 }
 
 var _ net.Conn = (*Client)(nil)
@@ -205,7 +203,9 @@ func (c *Client) waitCommand(name string, txID float64, timeout time.Duration) (
 }
 
 func (c *Client) readLoop() {
+	c.writeMu.Lock()
 	cc := c.c
+	c.writeMu.Unlock()
 	if cc == nil {
 		return
 	}
@@ -238,6 +238,8 @@ func (c *Client) Write(p []byte) (n int, err error) {
 	}
 }
 
+const maxPendingSize = 4 << 20 // 4MB cap for pending cipher data
+
 func (c *Client) pacer() {
 	audioTicker := time.NewTicker(23 * time.Millisecond)
 	videoTicker := time.NewTicker(33 * time.Millisecond)
@@ -251,6 +253,10 @@ func (c *Client) pacer() {
 			return
 		case b := <-c.dataIn:
 			pending = append(pending, b...)
+			if len(pending) > maxPendingSize {
+				// Drop oldest data to prevent unbounded growth
+				pending = pending[len(pending)-maxPendingSize:]
+			}
 		case <-audioTicker.C:
 			_ = c.writeAudioFrame()
 			c.audioTS += 23
@@ -279,17 +285,23 @@ func (c *Client) writeVideoFrame(pending *[]byte) error {
 	}
 
 	nalus := [][]byte{base}
-	if len(*pending) > 0 && c.enc != nil {
-		target := c.targetVideoBodySize()
-		maxCipher := c.maxCipherForTarget(target, len(base))
-		if maxCipher > len(*pending) {
-			maxCipher = len(*pending)
-		}
-		if maxCipher > 0 {
-			ct := make([]byte, maxCipher)
-			c.enc.XORKeyStream(ct, (*pending)[:maxCipher])
-			*pending = (*pending)[maxCipher:]
-			nalus = append(nalus, buildSEIUserDataUnregistered(ct))
+	if len(*pending) > 0 {
+		// Safely copy enc under lock to avoid race with Close()
+		c.writeMu.Lock()
+		enc := c.enc
+		c.writeMu.Unlock()
+		if enc != nil {
+			target := c.targetVideoBodySize()
+			maxCipher := c.maxCipherForTarget(target, len(base))
+			if maxCipher > len(*pending) {
+				maxCipher = len(*pending)
+			}
+			if maxCipher > 0 {
+				ct := make([]byte, maxCipher)
+				enc.XORKeyStream(ct, (*pending)[:maxCipher])
+				*pending = (*pending)[maxCipher:]
+				nalus = append(nalus, buildSEIUserDataUnregistered(ct))
+			}
 		}
 	}
 	body := buildAVCVideoBody(frameType, nalus...)
@@ -344,9 +356,6 @@ func (c *Client) writeMessage(ts uint32, msgType uint8, csid uint32, body []byte
 
 	cw := c.c.cw
 	chunkSize := cw.chunkSize
-	if uint32(len(c.tmp)) < chunkSize {
-		c.tmp = make([]byte, chunkSize)
-	}
 
 	totalLen := uint32(len(body))
 	h := messageHeader{
@@ -402,7 +411,6 @@ func (c *Client) Close() error {
 	err := c.raw.Close()
 	c.writeMu.Lock()
 	c.enc = nil
-	c.tmp = nil
 	c.c = nil
 	c.writeMu.Unlock()
 	return err

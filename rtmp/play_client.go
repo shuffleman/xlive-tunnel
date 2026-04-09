@@ -28,7 +28,6 @@ type PlayClient struct {
 	readMu    sync.Mutex
 	src       []byte
 	srcOff    int
-	closed    bool
 	streamID  uint32
 	streamKey string
 	fp        Fingerprint
@@ -196,7 +195,6 @@ func (c *PlayClient) Read(p []byte) (n int, err error) {
 
 func (c *PlayClient) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 func (c *PlayClient) Close() error {
-	c.closed = true
 	err := c.raw.Close()
 	c.readMu.Lock()
 	c.dec = nil
