@@ -386,9 +386,8 @@ func (s *Server) handleAudioMessage(msg *message) {
 		}
 	}
 
-	s.dec.XORKeyStream(data, data)
 	select {
-	case s.dataCh <- data:
+	case s.dataCh <- append([]byte(nil), data...):
 	case <-s.closeCh:
 	}
 }
@@ -440,11 +439,8 @@ func (s *Server) handleVideoMessage(msg *message) {
 	}
 
 	for _, ct := range extracted {
-		pt := make([]byte, len(ct))
-		copy(pt, ct)
-		s.dec.XORKeyStream(pt, pt)
 		select {
-		case s.dataCh <- pt:
+		case s.dataCh <- append([]byte(nil), ct...):
 		case <-s.closeCh:
 			return
 		}

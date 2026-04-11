@@ -1,7 +1,6 @@
 package rtmp
 
 import (
-	"crypto/aes"
 	"crypto/cipher"
 	"net"
 	"testing"
@@ -11,28 +10,9 @@ import (
 )
 
 func TestAcceptRealRTMPPublish(t *testing.T) {
-	shared := make([]byte, 16)
-	keyiv, err := xcrypto.DeriveKeyIV(shared)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Mock selectDecryptor that validates the probe pattern like the real one:
-	// first decrypted byte must be 0x00 for xlive mode.
-	block, _ := aes.NewCipher(keyiv.Key[:])
-	realDec := cipher.NewCFBDecrypter(block, keyiv.IV[:])
-
 	selectDec := func(firstCiphertext []byte) (cipher.Stream, error) {
-		if len(firstCiphertext) < 1 {
-			return nil, errNoMatch
-		}
-		probe := make([]byte, 1)
-		realDec.XORKeyStream(probe, firstCiphertext[:1])
-		if probe[0] != 0x00 {
-			return nil, errNoMatch
-		}
-		// Reset and return a fresh decryptor
-		return xcrypto.NewCFBDecrypter(keyiv)
+		_ = firstCiphertext
+		return xcrypto.IdentityStream(), nil
 	}
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -110,11 +90,11 @@ func TestAcceptRealRTMPPublish(t *testing.T) {
 	s := <-serverCh
 	select {
 	case <-s.XLIVEReady():
-		t.Fatal("unexpected xlive ready for real rtmp")
+		// Expected: no key detection in plaintext mode, always xlive
 	case <-s.RelayReady():
-		// Expected: key detection failed → relay mode
+		t.Fatal("unexpected relay mode in plaintext mode")
 	case <-time.After(200 * time.Millisecond):
-		t.Fatal("expected relay mode to activate")
+		t.Fatal("expected xlive mode to activate")
 	}
 	_ = s.Close()
 }

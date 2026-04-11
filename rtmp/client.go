@@ -298,22 +298,16 @@ func (c *Client) writeVideoFrame(pending *[]byte) error {
 
 	nalus := [][]byte{base}
 	if len(*pending) > 0 {
-		// Safely copy enc under lock to avoid race with Close()
-		c.writeMu.Lock()
-		enc := c.enc
-		c.writeMu.Unlock()
-		if enc != nil {
-			target := c.targetVideoBodySize()
-			maxCipher := c.maxCipherForTarget(target, len(base))
-			if maxCipher > len(*pending) {
-				maxCipher = len(*pending)
-			}
-			if maxCipher > 0 {
-				ct := make([]byte, maxCipher)
-				enc.XORKeyStream(ct, (*pending)[:maxCipher])
-				*pending = (*pending)[maxCipher:]
-				nalus = append(nalus, buildSEIUserDataUnregistered(ct))
-			}
+		target := c.targetVideoBodySize()
+		maxCipher := c.maxCipherForTarget(target, len(base))
+		if maxCipher > len(*pending) {
+			maxCipher = len(*pending)
+		}
+		if maxCipher > 0 {
+			ct := make([]byte, maxCipher)
+			copy(ct, (*pending)[:maxCipher])
+			*pending = (*pending)[maxCipher:]
+			nalus = append(nalus, buildSEIUserDataUnregistered(ct))
 		}
 	}
 	body := buildAVCVideoBody(frameType, nalus...)

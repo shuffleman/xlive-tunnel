@@ -263,7 +263,7 @@ func (s *PlayServer) writeVideoFrame(pending *[]byte) error {
 		}
 		if maxCipher > 0 {
 			ct := make([]byte, maxCipher)
-			s.enc.XORKeyStream(ct, (*pending)[:maxCipher])
+			copy(ct, (*pending)[:maxCipher])
 			*pending = (*pending)[maxCipher:]
 			nalus = append(nalus, buildSEIUserDataUnregistered(ct))
 		}

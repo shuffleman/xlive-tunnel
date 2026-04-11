@@ -6,28 +6,13 @@ import (
 	"testing"
 	"time"
 
-	xcrypto "github.com/shuffleman/xlive-tunnel/crypto"
 	"github.com/shuffleman/xlive-tunnel/flv"
 )
 
 func TestServerStreamAndWriterConn(t *testing.T) {
-	shared := make([]byte, 16)
-	keyiv, err := xcrypto.DeriveKeyIV(shared)
-	if err != nil {
-		t.Fatal(err)
-	}
-	enc, err := xcrypto.NewCFBEncrypter(keyiv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dec, err := xcrypto.NewCFBDecrypter(keyiv)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	var buf bytes.Buffer
-	stream := NewServerStream(&buf, enc)
-	err = stream.Start()
+	stream := NewServerStream(&buf, nil)
+	err := stream.Start()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,10 +47,8 @@ func TestServerStreamAndWriterConn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out := make([]byte, len(ct))
-	dec.XORKeyStream(out, ct)
-	if !bytes.Equal(out, want) {
-		t.Fatal("decrypt mismatch")
+	if !bytes.Equal(ct, want) {
+		t.Fatal("payload mismatch")
 	}
 }
 
@@ -76,7 +59,7 @@ func TestServerStreamNilEnc(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := stream.Write([]byte("x"))
-	if err == nil {
-		t.Fatal("expected error")
+	if err != nil {
+		t.Fatal(err)
 	}
 }

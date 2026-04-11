@@ -366,13 +366,18 @@ func TestRelayModeAtomic(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = server.relayMode.Load()
+			server.relayMu.Lock()
+			_ = server.relayMode
+			server.relayMu.Unlock()
 		}()
 	}
 	server.enterRelayMode()
 	wg.Wait()
 
-	if !server.relayMode.Load() {
+	server.relayMu.Lock()
+	isRelay := server.relayMode
+	server.relayMu.Unlock()
+	if !isRelay {
 		t.Fatal("relay mode should be true after enterRelayMode")
 	}
 	client.Close()

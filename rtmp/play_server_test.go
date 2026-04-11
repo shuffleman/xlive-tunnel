@@ -119,7 +119,7 @@ loop2:
 			for _, n := range nalus {
 				if ct, ok := extractSEIUserDataUnregistered(n); ok && len(ct) > 0 {
 					data := append([]byte(nil), ct...)
-					dec.XORKeyStream(data, data)
+					_ = dec
 					got = append(got, data...)
 				}
 			}

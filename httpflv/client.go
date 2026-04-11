@@ -119,7 +119,6 @@ func (c *ClientConn) Read(p []byte) (n int, err error) {
 			}
 			n, err := c.r.Read(p[:toRead])
 			if n > 0 {
-				c.dec.XORKeyStream(p[:n], p[:n])
 				c.tagRemain -= uint32(n)
 				return n, nil
 			}

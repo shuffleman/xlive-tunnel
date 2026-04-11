@@ -2,7 +2,6 @@ package httpflv
 
 import (
 	"crypto/cipher"
-	"errors"
 	"io"
 	"net"
 	"sync"
@@ -60,12 +59,7 @@ func (s *ServerStream) Write(p []byte) (n int, err error) {
 			return 0, err
 		}
 	}
-	if s.enc == nil {
-		return 0, errors.New("httpflv: nil encryptor")
-	}
-	ct := make([]byte, len(p))
-	s.enc.XORKeyStream(ct, p)
-	err = flv.WriteTag(s.w, flv.TagTypeVideo, s.seq, ct)
+	err = flv.WriteTag(s.w, flv.TagTypeVideo, s.seq, p)
 	if err != nil {
 		return 0, err
 	}

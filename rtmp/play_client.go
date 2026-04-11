@@ -152,7 +152,7 @@ func (c *PlayClient) Read(p []byte) (n int, err error) {
 			if remain < n {
 				n = remain
 			}
-			c.dec.XORKeyStream(p[:n], c.src[c.srcOff:c.srcOff+n])
+			copy(p[:n], c.src[c.srcOff:c.srcOff+n])
 			c.srcOff += n
 			if c.srcOff >= len(c.src) {
 				c.src = nil
