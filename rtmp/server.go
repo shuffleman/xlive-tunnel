@@ -9,7 +9,6 @@ import (
 	"io"
 	"net"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -41,15 +40,16 @@ type Server struct {
 
 	// relay mode: when key detection fails, forward raw RTMP messages
 	// to an upstream server (e.g., nginx-rtmp) instead of decrypting.
-	relayMode  atomic.Bool
+	relayMu    sync.Mutex
+	relayMode  bool
 	relayCh    chan RelayMessage
 	relayReady chan struct{}
 
-	bytesReceived uint64
+	bytesReceived uint32
 	xliveExpected bool
 
 	windowAckSize uint32
-	lastAck       uint64
+	lastAck       uint32
 	closeOnce     sync.Once
 	closeCh       chan struct{}
 
@@ -276,9 +276,11 @@ func (s *Server) readLoop() {
 	defer close(s.doneCh)
 	defer close(s.dataCh)
 	defer func() {
-		if s.relayMode.Load() {
+		s.relayMu.Lock()
+		if s.relayMode {
 			close(s.relayCh)
 		}
+		s.relayMu.Unlock()
 	}()
 
 	for {
@@ -286,14 +288,17 @@ func (s *Server) readLoop() {
 		if err != nil {
 			return
 		}
-		s.bytesReceived += uint64(len(msg.Payload))
-		if s.windowAckSize > 0 && uint32(s.bytesReceived-s.lastAck) >= s.windowAckSize {
-			_ = s.c.WriteAcknowledgement(uint32(s.bytesReceived))
+		s.bytesReceived += uint32(len(msg.Payload))
+		if s.windowAckSize > 0 && s.bytesReceived-s.lastAck >= s.windowAckSize {
+			_ = s.c.WriteAcknowledgement(s.bytesReceived)
 			s.lastAck = s.bytesReceived
 		}
 
 		// Relay mode: forward raw messages to upstream
-		if s.relayMode.Load() {
+		s.relayMu.Lock()
+		isRelay := s.relayMode
+		s.relayMu.Unlock()
+		if isRelay {
 			switch msg.Header.MessageTypeID {
 			case messageTypeSetChunkSize:
 				if len(msg.Payload) >= 4 {
@@ -333,7 +338,10 @@ func (s *Server) readLoop() {
 // enterRelayMode switches the server from normal mode to relay mode.
 // Called when key detection fails (real RTMP stream detected).
 func (s *Server) enterRelayMode() {
-	if s.relayMode.CompareAndSwap(false, true) {
+	s.relayMu.Lock()
+	defer s.relayMu.Unlock()
+	if !s.relayMode {
+		s.relayMode = true
 		close(s.relayReady)
 	}
 }
