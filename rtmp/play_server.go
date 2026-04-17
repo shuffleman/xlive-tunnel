@@ -222,6 +222,19 @@ func (s *PlayServer) pacer() {
 
 	var pending []byte
 	for {
+		if len(pending) > maxPendingSize {
+			select {
+			case <-s.closeCh:
+				return
+			case <-audioTicker.C:
+				_ = s.writeAudioFrame()
+				s.audioTS += 23
+			case <-videoTicker.C:
+				_ = s.writeVideoFrame(&pending)
+				s.videoTS += 33
+			}
+			continue
+		}
 		select {
 		case <-s.closeCh:
 			return
@@ -238,11 +251,7 @@ func (s *PlayServer) pacer() {
 }
 
 func (s *PlayServer) writeAudioFrame() error {
-	body := make([]byte, 2+len(sampleAACRaw))
-	body[0] = aacSoundFormat
-	body[1] = aacPacketRaw
-	copy(body[2:], sampleAACRaw)
-	return s.writeMessage(s.audioTS, messageTypeAudio, csidAudio, body)
+	return s.writeMessage(s.audioTS, messageTypeAudio, csidAudio, sampleAACBody)
 }
 
 func (s *PlayServer) writeVideoFrame(pending *[]byte) error {
@@ -252,6 +261,13 @@ func (s *PlayServer) writeVideoFrame(pending *[]byte) error {
 	if s.videoFrameCount%60 == 0 {
 		frameType = avcFrameKeyframe
 		base = sampleIDR
+	}
+
+	if len(*pending) == 0 {
+		if frameType == avcFrameKeyframe {
+			return s.writeMessage(s.videoTS, messageTypeVideo, csidVideo, sampleVideoBodyIDR)
+		}
+		return s.writeMessage(s.videoTS, messageTypeVideo, csidVideo, sampleVideoBodyP)
 	}
 
 	nalus := [][]byte{base}

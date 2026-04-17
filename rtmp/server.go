@@ -387,7 +387,7 @@ func (s *Server) handleAudioMessage(msg *message) {
 	}
 
 	select {
-	case s.dataCh <- append([]byte(nil), data...):
+	case s.dataCh <- data:
 	case <-s.closeCh:
 	}
 }
@@ -412,35 +412,28 @@ func (s *Server) handleVideoMessage(msg *message) {
 		return
 	}
 
-	var extracted [][]byte
 	for _, n := range nalus {
-		if ct, ok := extractSEIUserDataUnregistered(n); ok && len(ct) > 0 {
-			extracted = append(extracted, ct)
+		ct, ok := extractSEIUserDataUnregistered(n)
+		if !ok || len(ct) == 0 {
+			continue
 		}
-	}
-	if len(extracted) == 0 {
-		return
-	}
-
-	if s.dec == nil {
-		dec, err := s.selectDec(extracted[0])
-		if err != nil {
-			if !s.xliveExpected {
-				s.enterRelayMode()
+		if s.dec == nil {
+			dec, err := s.selectDec(ct)
+			if err != nil {
+				if !s.xliveExpected {
+					s.enterRelayMode()
+				}
+				return
 			}
-			return
+			s.dec = dec
+			select {
+			case <-s.xliveReady:
+			default:
+				close(s.xliveReady)
+			}
 		}
-		s.dec = dec
 		select {
-		case <-s.xliveReady:
-		default:
-			close(s.xliveReady)
-		}
-	}
-
-	for _, ct := range extracted {
-		select {
-		case s.dataCh <- append([]byte(nil), ct...):
+		case s.dataCh <- ct:
 		case <-s.closeCh:
 			return
 		}

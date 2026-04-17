@@ -280,11 +280,7 @@ func (c *Client) pacer() {
 }
 
 func (c *Client) writeAudioFrame() error {
-	body := make([]byte, 2+len(sampleAACRaw))
-	body[0] = aacSoundFormat
-	body[1] = aacPacketRaw
-	copy(body[2:], sampleAACRaw)
-	return c.writeMessage(c.audioTS, messageTypeAudio, csidAudio, body)
+	return c.writeMessage(c.audioTS, messageTypeAudio, csidAudio, sampleAACBody)
 }
 
 func (c *Client) writeVideoFrame(pending *[]byte) error {
@@ -294,6 +290,13 @@ func (c *Client) writeVideoFrame(pending *[]byte) error {
 	if c.videoFrameCount%60 == 0 {
 		frameType = avcFrameKeyframe
 		base = sampleIDR
+	}
+
+	if len(*pending) == 0 {
+		if frameType == avcFrameKeyframe {
+			return c.writeMessage(c.videoTS, messageTypeVideo, csidVideo, sampleVideoBodyIDR)
+		}
+		return c.writeMessage(c.videoTS, messageTypeVideo, csidVideo, sampleVideoBodyP)
 	}
 
 	nalus := [][]byte{base}
