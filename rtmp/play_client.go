@@ -174,16 +174,26 @@ func (c *PlayClient) Read(p []byte) (n int, err error) {
 		case messageTypeAudio:
 			continue
 		case messageTypeVideo:
-			nalus := parseAVCNALUs(m.Payload)
-			if len(nalus) == 0 {
-				continue
-			}
 			var ct []byte
-			for _, n := range nalus {
-				if b, ok := extractSEIUserDataUnregistered(n); ok && len(b) > 0 {
-					ct = append(ct, b...)
+			ctCopied := false
+			forEachAVCNALU(m.Payload, func(nalu []byte) bool {
+				b, ok := extractSEIUserDataUnregistered(nalu)
+				if !ok || len(b) == 0 {
+					return true
 				}
-			}
+				if ct == nil {
+					ct = b
+					return true
+				}
+				if !ctCopied {
+					tmp := make([]byte, len(ct))
+					copy(tmp, ct)
+					ct = tmp
+					ctCopied = true
+				}
+				ct = append(ct, b...)
+				return true
+			})
 			if len(ct) == 0 {
 				continue
 			}

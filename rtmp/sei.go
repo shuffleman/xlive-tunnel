@@ -65,8 +65,42 @@ func extractSEIUserDataUnregistered(nalu []byte) (ciphertext []byte, ok bool) {
 		payload := rbsp[i : i+ps]
 		i += ps
 		if pt == 5 && len(payload) >= 16 && bytes.Equal(payload[:16], seiUUID[:]) {
-			out := make([]byte, len(payload[16:]))
-			copy(out, payload[16:])
+			ct := payload[16:]
+			if len(ct) == 0 {
+				return nil, true
+			}
+			needStrip := false
+			zeroCount := 0
+			for j := 0; j < len(ct); j++ {
+				x := ct[j]
+				if zeroCount >= 2 && x == 0x03 {
+					needStrip = true
+					break
+				}
+				if x == 0x00 {
+					zeroCount++
+				} else {
+					zeroCount = 0
+				}
+			}
+			if !needStrip {
+				return ct, true
+			}
+			out := make([]byte, 0, len(ct))
+			zeroCount = 0
+			for j := 0; j < len(ct); j++ {
+				x := ct[j]
+				if zeroCount >= 2 && x == 0x03 {
+					zeroCount = 0
+					continue
+				}
+				out = append(out, x)
+				if x == 0x00 {
+					zeroCount++
+				} else {
+					zeroCount = 0
+				}
+			}
 			return out, true
 		}
 		for i < len(rbsp) && rbsp[i] == 0x00 {
@@ -116,8 +150,23 @@ func epbWrite(w *bytes.Buffer, payload []byte) {
 }
 
 func epbStrip(b []byte) []byte {
-	out := make([]byte, 0, len(b))
 	zeroCount := 0
+	for i := 0; i < len(b); i++ {
+		x := b[i]
+		if zeroCount >= 2 && x == 0x03 {
+			goto slow
+		}
+		if x == 0x00 {
+			zeroCount++
+		} else {
+			zeroCount = 0
+		}
+	}
+	return b
+
+slow:
+	out := make([]byte, 0, len(b))
+	zeroCount = 0
 	for i := 0; i < len(b); i++ {
 		x := b[i]
 		if zeroCount >= 2 && x == 0x03 {

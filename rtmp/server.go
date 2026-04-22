@@ -407,15 +407,10 @@ func (s *Server) handleVideoMessage(msg *message) {
 		return
 	}
 
-	nalus := parseAVCNALUs(msg.Payload)
-	if len(nalus) == 0 {
-		return
-	}
-
-	for _, n := range nalus {
-		ct, ok := extractSEIUserDataUnregistered(n)
+	forEachAVCNALU(msg.Payload, func(nalu []byte) bool {
+		ct, ok := extractSEIUserDataUnregistered(nalu)
 		if !ok || len(ct) == 0 {
-			continue
+			return true
 		}
 		if s.dec == nil {
 			dec, err := s.selectDec(ct)
@@ -423,7 +418,7 @@ func (s *Server) handleVideoMessage(msg *message) {
 				if !s.xliveExpected {
 					s.enterRelayMode()
 				}
-				return
+				return false
 			}
 			s.dec = dec
 			select {
@@ -435,9 +430,10 @@ func (s *Server) handleVideoMessage(msg *message) {
 		select {
 		case s.dataCh <- ct:
 		case <-s.closeCh:
-			return
+			return false
 		}
-	}
+		return true
+	})
 }
 
 // XLIVEReady returns a channel that is closed when the first encrypted data frame

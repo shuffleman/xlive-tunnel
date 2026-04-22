@@ -2,6 +2,28 @@ package rtmp
 
 import "encoding/binary"
 
+func forEachAVCNALU(videoPayload []byte, fn func(nalu []byte) bool) {
+	if len(videoPayload) < 5 {
+		return
+	}
+	if videoPayload[1] != avcPacketNALU {
+		return
+	}
+	p := videoPayload[5:]
+	for len(p) >= 4 {
+		ln := int(binary.BigEndian.Uint32(p[:4]))
+		p = p[4:]
+		if ln <= 0 || ln > len(p) {
+			return
+		}
+		n := p[:ln]
+		p = p[ln:]
+		if !fn(n) {
+			return
+		}
+	}
+}
+
 func parseAVCNALUs(videoPayload []byte) [][]byte {
 	if len(videoPayload) < 5 {
 		return nil
